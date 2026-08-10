@@ -1,0 +1,34 @@
+# MATLAB 产物 / 缓存
+*.asv
+*.mex*
+*.o
+*.obj
+
+# 运行结果（按需保留时移除下列行）
+results/
+*.png
+*.jpg
+*.jpeg
+*.eps
+*.fig
+*.mat
+
+# 日志 / 中间产物
+*_out.txt
+reg_*.txt
+*.log
+
+# 临时调试脚本（可选，依据你的偏好保留或忽略）
+dbg*.m
+dbg2.m
+probe*.m
+verify_*.m
+
+# 操作系统
+Thumbs.db
+.DS_Store
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
