@@ -30,8 +30,9 @@ s = RandStream('mt19937ar','Seed', 100*seed + 7);
 %   - half / bounds / 路宽 / 楼高 / 地形幅度 / footprint / 最小走廊 / 安全壳 / 桥宽 等均乘 S
 %   - terrFreq 除以 S（保持地形波长在世界尺度不变，仅幅度放大）
 %   - vehMargin / 车辆半径 / 轨迹线宽 不乘 S（无人机物理尺寸恒定）
-% 选 S=1.6：环境放大 60%，缝宽相对无人机宽出 60%，整体比例仍协调。
-ENV_SCALE = 1.6;
+% 当前选 S=2.5：环境放大 2.5 倍，缝宽相对无人机显著变宽，CAv9x 搜索难度下降，无人机不易卡缝。
+% 注意：mu_config.m 中 ENV_SCALE 必须与此保持一致；修改缩放时两处须同步，或由统一常量管理。
+ENV_SCALE = 2.5;
 half = 200 * ENV_SCALE;   % 城市半范围（已含 ENV_SCALE，下游所有 half 引用自动放大）
 
 % ===== 难度参数（重庆式三梯度：半岛新城 / 坡地主城 / 立体老城）=====
@@ -147,47 +148,149 @@ end
 bridges = struct('id',{},'class',{},'centerline',{},'width',{},'deckZ',{},'pillars',{},'kind',{});
 % 交叉口 (0,0) 处地形最高，桥面须高于地面路 + 下方可飞
 zCross = terrainF(0,0);
-deckZ_main = zCross + 26*ENV_SCALE;     % 主线跨线高架高度
-deckZ_ramp = zCross + 11*ENV_SCALE;     % 匝道（较低，像引道）
 ovHalf = 90*ENV_SCALE;                  % 跨线高架半长（覆盖交叉口 + 引道）
 bid = 0;
-% ---- 主线跨线高架：沿 X 方向，中心 (0,0,deckZ_main) ----
-p1m = [-ovHalf 0]; p2m = [ovHalf 0];
-nPierM = 5;                             % 两端 + 3 中间墩
-piersM = zeros(nPierM,3);
-for pk=1:nPierM
-    f = (pk-1)/(nPierM-1);
-    px = (1-f)*p1m(1) + f*p2m(1); py = (1-f)*p1m(2) + f*p2m(2);
-    piersM(pk,:) = [px py terrainF(px,py)];
-end
-bid = bid + 1;
-bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1m;p2m], ...
-    'width',arterialW,'deckZ',deckZ_main,'pillars',piersM,'kind','overpass');
-% ---- 4 条定向匝道：从主线两端落到地面 Y 向路（x=0 线）两侧，形成互通 ----
-% 主线沿 X（y=0），Y 向地面 arterial 在 x=0；匝道连接主线端点 (±ovHalf,0)
-%   斜下落到 Y 路两侧 (0, ±rampLen)，实现"高架 X 主线 ↔ 地面 Y 主线"互通。
-rampLen = 55*ENV_SCALE;
-rampPairs = [ -ovHalf, +rampLen; -ovHalf, -rampLen; +ovHalf, +rampLen; +ovHalf, -rampLen ];
-for rk=1:4
-    ex = rampPairs(rk,1); ey = rampPairs(rk,2);
-    pA = [ex 0];            % 主线端点（接跨线高架落地）
-    pB = [0 ey];            % 地面 Y 向路侧（x=0 线）
-    nPierR = 2;
-    piersR = zeros(nPierR,3);
-    for pk=1:nPierR
-        f = (pk-1)/(nPierR-1);
-        px = (1-f)*pA(1) + f*pB(1); py = (1-f)*pA(2) + f*pB(2);
-        piersR(pk,:) = [px py terrainF(px,py)];
+
+% ============================================================
+% 弧线匝道辅助：二次 Bezier 折线（N 段），从 pA 平滑弯到 pB，
+% 控制点在中点法向偏移 side*bow，deckZ 由 [zHi zLo] 沿参数线性插值。
+% 返回 cl(N+1 x 2) 与 pillars(K x 3, 接地形)。用于让"该做弧线的匝道"真正呈弧线。
+% ============================================================
+function [cl, piers] = curvedRamp(pA, pB, zHi, zLo, bow, nSeg, S)
+    nSeg = max(6, nSeg);
+    mid = (pA + pB)/2;
+    dirv = (pB - pA)/norm(pB - pA);
+    perpv = [-dirv(2) dirv(1)];
+    ctrl = mid + perpv * bow;               % 外凸控制点 -> 平滑弧线
+    cl = zeros(nSeg+1, 2);
+    for k=0:nSeg
+        t = k/nSeg;
+        cl(k+1,:) = (1-t)^2*pA + 2*(1-t)*t*ctrl + t^2*pB;
     end
-    bid = bid + 1;
-    bridges(end+1) = struct('id',bid,'class','bridge','centerline',[pA;pB], ...
-        'width',12*ENV_SCALE,'deckZ',deckZ_ramp,'pillars',piersR,'kind','ramp');
+    % 墩：每隔若干段取折线点接地形（至少两端）
+    stepP = max(1, floor(nSeg/3));
+    idx = unique([1:stepP:nSeg+1, nSeg+1]);
+    piers = zeros(numel(idx), 3);
+    for j=1:numel(idx)
+        x = cl(idx(j),1); y = cl(idx(j),2);
+        piers(j,:) = [x y terrainF(x,y)];
+    end
+end
+
+if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
+    if strcmpi(difficulty,'medium')
+        % ---- medium：单层跨线高架（沿 X）+ 4 条定向匝道（用户要求保持原状）----
+        deckZ_main = zCross + 26*ENV_SCALE;
+        deckZ_ramp = zCross + 11*ENV_SCALE;
+        p1m = [-ovHalf 0]; p2m = [ovHalf 0];
+        nPierM = 5;
+        piersM = zeros(nPierM,3);
+        for pk=1:nPierM
+            f = (pk-1)/(nPierM-1);
+            px = (1-f)*p1m(1) + f*p2m(1); py = (1-f)*p1m(2) + f*p2m(2);
+            piersM(pk,:) = [px py terrainF(px,py)];
+        end
+        bid = bid + 1;
+        bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1m;p2m], ...
+            'width',arterialW,'deckZ',deckZ_main,'pillars',piersM,'kind','overpass');
+        rampLen = 55*ENV_SCALE;
+        rampPairs = [ -ovHalf,+rampLen; -ovHalf,-rampLen; +ovHalf,+rampLen; +ovHalf,-rampLen ];
+        for rk=1:4
+            ex = rampPairs(rk,1); ey = rampPairs(rk,2);
+            pA = [ex 0]; pB = [0 ey];
+            nPierR = 2; piersR = zeros(nPierR,3);
+            for pk=1:nPierR
+                f = (pk-1)/(nPierR-1);
+                px = (1-f)*pA(1) + f*pB(1); py = (1-f)*pA(2) + f*pB(2);
+                piersR(pk,:) = [px py terrainF(px,py)];
+            end
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',[pA;pB], ...
+                'width',12*ENV_SCALE,'deckZ',deckZ_ramp,'pillars',piersR,'kind','ramp');
+        end
+    else
+        % ---- hard：多层复式互通立交（定慧桥式）----
+        %   双层主线：overpassX 高层 / overpassY 低层；8 条弧线定向匝道；
+        %   2 条层间螺旋连接；4 条 270° 盘桥(loop)。所有匝道/连接均为弧线。
+        zHigh = zCross + 48*ENV_SCALE;
+        zLow  = zCross + 24*ENV_SCALE;
+        % 主线 overpassX（沿 X，高层）
+        p1x = [-ovHalf 0]; p2x = [ovHalf 0];
+        nPx = 5; piersX = zeros(nPx,3);
+        for pk=1:nPx
+            f = (pk-1)/(nPx-1);
+            px = (1-f)*p1x(1)+f*p2x(1); py=(1-f)*p1x(2)+f*p2x(2);
+            piersX(pk,:) = [px py terrainF(px,py)];
+        end
+        bid = bid + 1;
+        bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1x;p2x], ...
+            'width',arterialW,'deckZ',zHigh,'pillars',piersX,'kind','overpass');
+        % 主线 overpassY（沿 Y，低层）
+        p1y = [0 -ovHalf]; p2y = [0 ovHalf];
+        nPy = 5; piersY = zeros(nPy,3);
+        for pk=1:nPy
+            f = (pk-1)/(nPy-1);
+            px = (1-f)*p1y(1)+f*p2y(1); py=(1-f)*p1y(2)+f*p2y(2);
+            piersY(pk,:) = [px py terrainF(px,py)];
+        end
+        bid = bid + 1;
+        bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1y;p2y], ...
+            'width',arterialW,'deckZ',zLow,'pillars',piersY,'kind','overpass');
+        % 4 条弧线匝道：overpassX 两端 -> 地面 Y 路两侧
+        rampLen = 60*ENV_SCALE;
+        rampPairsX = [ -ovHalf,+rampLen; -ovHalf,-rampLen; +ovHalf,+rampLen; +ovHalf,-rampLen ];
+        for rk=1:4
+            side = sign(rampPairsX(rk,2));
+            [clR, piersR] = curvedRamp([rampPairsX(rk,1) 0], [0 rampPairsX(rk,2)], ...
+                zHigh, zCross+6*ENV_SCALE, side*42*ENV_SCALE, 12, ENV_SCALE);
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',clR, ...
+                'width',12*ENV_SCALE,'deckZ',[zHigh zCross+6*ENV_SCALE],'pillars',piersR,'kind','ramp');
+        end
+        % 4 条弧线匝道：overpassY 两端 -> 地面 X 路两侧
+        rampPairsY = [ +rampLen,-ovHalf; -rampLen,-ovHalf; +rampLen,+ovHalf; -rampLen,+ovHalf ];
+        for rk=1:4
+            side = sign(rampPairsY(rk,1));
+            [clR, piersR] = curvedRamp([0 rampPairsY(rk,2)], [rampPairsY(rk,1) 0], ...
+                zLow, zCross+6*ENV_SCALE, side*42*ENV_SCALE, 12, ENV_SCALE);
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',clR, ...
+                'width',12*ENV_SCALE,'deckZ',[zLow zCross+6*ENV_SCALE],'pillars',piersR,'kind','ramp');
+        end
+        % 2 条层间螺旋连接：overpassX(高层) 弯下接入 overpassY(低层)
+        connPairs = [ -ovHalf,-ovHalf; +ovHalf,+ovHalf ];
+        for ck=1:2
+            ax_ = connPairs(ck,1); ay_ = connPairs(ck,2);
+            [clC, piersC] = curvedRamp([ax_ 0], [0 ay_], zHigh, zLow, ...
+                sign(ax_)*38*ENV_SCALE, 12, ENV_SCALE);
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',clC, ...
+                'width',10*ENV_SCALE,'deckZ',[zHigh zLow],'pillars',piersC,'kind','ramp');
+        end
+        % 4 条 270° 盘桥(loop)：从高层螺旋下降回到低层，形成定慧桥式环岛
+        R_loop = 60*ENV_SCALE; loopSeg = 28;
+        loopStart = zHigh; loopEnd = zLow;
+        for q=1:4
+            ang0 = (q-1)*pi/2 + pi/4;
+            cxq = cos(ang0)*ovHalf*0.55; cyq = sin(ang0)*ovHalf*0.55;
+            pts = zeros(loopSeg+1,2); piersL = zeros(loopSeg+1,3);
+            for k=0:loopSeg
+                th = ang0 + k/loopSeg*1.5*pi;          % 270° 螺旋
+                x = cxq + R_loop*cos(th); y = cyq + R_loop*sin(th);
+                pts(k+1,:) = [x y]; piersL(k+1,:) = [x y terrainF(x,y)];
+            end
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',pts, ...
+                'width',11*ENV_SCALE,'deckZ',[loopStart loopEnd],'pillars',piersL,'kind','loop');
+        end
+    end
 end
 % 由渲染桥（city.bridges）单一来源派生碰撞副本，确保几何一致（R3 修复）：
 % 渲染与碰撞双用，任一参数变化只在 bridges 一处定义，碰撞副本由工厂函数生成，
 % 杜绝"看得见的桥"与"挡得住的桥"几何错位（无人机穿可见桥/被不可见桥挡）。
+% 多段折线桥（弧线匝道/盘桥）会在此拆成逐段碰撞盒，渲染与碰撞共用同一几何。
 for bi2=1:numel(bridges)
-    obs(end+1) = make_bridge_collision(bridges(bi2), ENV_SCALE);
+    obs = [obs, make_bridge_collision(bridges(bi2), ENV_SCALE)];
 end
 
 % ---- 按 BCR 在地块内密铺建筑（Poisson-disk 风格 + 四带高度分层）----
@@ -727,24 +830,55 @@ function o = make_bridge_collision(br, ENV_SCALE)
 % 输入 br : city.bridges 渲染结构（含 centerline / deckZ / pillars）
 % 输出 o  : obs 中 type='bridge' 的碰撞障碍副本（deck 旋转 box + pier 竖直圆柱）
 %   几何完全由 br 推导，与 mu_draw_scene.drawBridge 渲染共用同一组参数，避免双写错位。
-cl = br.centerline; p1 = cl(1,:); p2 = cl(2,:);
-deckZ = br.deckZ;
-dirv = (p2 - p1)/norm(p2 - p1);
-perp = [-dirv(2) dirv(1)];
-R = [dirv(1) dirv(2) 0; perp(1) perp(2) 0; 0 0 1];
-deckHW = [norm(p2-p1)/2, br.width/2, 1.6*ENV_SCALE];          % 桥长/半宽/半厚（厚随环境放大）
-deckC = [ (p1(1)+p2(1))/2 (p1(2)+p2(2))/2 deckZ ];
-pcols = br.pillars;                                  % [x y zBase] 列
-piers = struct('c',[],'r',[],'z1',[]);
-for pk=1:size(pcols,1)
-    pp = pcols(pk,:);
-    piers(pk) = struct('c',[pp(1) pp(2) 0],'r',2.5*ENV_SCALE,'z1',deckZ);   % 墩从地面到 deckZ
+%   多段折线桥（弧线匝道/盘桥）：centerline 为 Nx2 (N>2)，返回 1x(N-1) obs 数组，
+%   每段一个 deck box + 该段两端桥墩，deckZ 沿段线性插值。
+cl = br.centerline; n = size(cl,1);
+if n == 2
+    % ---- 单段直线桥（overpass / medium 原逻辑）----
+    p1 = cl(1,:); p2 = cl(2,:);
+    deckZ = br.deckZ;
+    dirv = (p2 - p1)/norm(p2 - p1);
+    perp = [-dirv(2) dirv(1)];
+    R = [dirv(1) dirv(2) 0; perp(1) perp(2) 0; 0 0 1];
+    deckHW = [norm(p2-p1)/2, br.width/2, 1.6*ENV_SCALE];
+    deckC = [ (p1(1)+p2(1))/2 (p1(2)+p2(2))/2 deckZ ];
+    pcols = br.pillars;
+    piers = struct('c',[],'r',[],'z1',[]);
+    for pk=1:size(pcols,1)
+        pp = pcols(pk,:);
+        piers(pk) = struct('c',[pp(1) pp(2) 0],'r',2.5*ENV_SCALE,'z1',deckZ);
+    end
+    o = struct('type','bridge','c',deckC,'r',[],'half',[],'h',[],'grid',[],'gap',[], ...
+        'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
+        'hw',[],'pod',[],'baseH',[],'bodyH',[],'setback',[],'kind',[],'hue',[],'poly',[],'roof',[],'tier',[], ...
+        'materialId','bridgedeck','pole',[],'arm',[],'post',[],'panel',[], ...
+        'deck',struct('c',deckC,'R',R,'hw',deckHW),'pier',piers);
+else
+    % ---- 多段折线桥：逐段拆分 ----
+    dZ = br.deckZ;
+    if isscalar(dZ), zA = dZ; zB = dZ; else zA = dZ(1); zB = dZ(end); end
+    tmp = {};
+    for i=1:n-1
+        p1 = cl(i,:); p2 = cl(i+1,:);
+        tmid = (i-0.5)/(n-1);
+        zSeg = zA + (zB - zA)*tmid;            % 沿桥长线性插值 deckZ
+        dirv = (p2 - p1)/norm(p2 - p1);
+        perp = [-dirv(2) dirv(1)];
+        R = [dirv(1) dirv(2) 0; perp(1) perp(2) 0; 0 0 1];
+        deckHW = [norm(p2-p1)/2, br.width/2, 1.6*ENV_SCALE];
+        deckC = [ (p1(1)+p2(1))/2 (p1(2)+p2(2))/2 zSeg ];
+        % 该段两端桥墩（接地形）
+        piers = struct('c',[],'r',[],'z1',[]);
+        piers(1) = struct('c',[p1(1) p1(2) 0],'r',2.5*ENV_SCALE,'z1',zSeg);
+        piers(2) = struct('c',[p2(1) p2(2) 0],'r',2.5*ENV_SCALE,'z1',zSeg);
+        tmp{end+1} = struct('type','bridge','c',deckC,'r',[],'half',[],'h',[],'grid',[],'gap',[], ...
+            'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
+            'hw',[],'pod',[],'baseH',[],'bodyH',[],'setback',[],'kind',[],'hue',[],'poly',[],'roof',[],'tier',[], ...
+            'materialId','bridgedeck','pole',[],'arm',[],'post',[],'panel',[], ...
+            'deck',struct('c',deckC,'R',R,'hw',deckHW),'pier',piers);
+    end
+    o = [tmp{:}];
 end
-o = struct('type','bridge','c',deckC,'r',[],'half',[],'h',[],'grid',[],'gap',[], ...
-    'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
-    'hw',[],'pod',[],'baseH',[],'bodyH',[],'setback',[],'kind',[],'hue',[],'poly',[],'roof',[],'tier',[], ...
-    'materialId','bridgedeck','pole',[],'arm',[],'post',[],'panel',[], ...
-    'deck',struct('c',deckC,'R',R,'hw',deckHW),'pier',piers);
 end
 
 % ============ 单栋 rich-building 生成（随 mu_city_layout 一并迁移） ============

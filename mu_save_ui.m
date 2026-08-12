@@ -1,10 +1,8 @@
 function mu_save_ui(ax, finalPath, fmt)
-% mu_save_ui — 原子写保存 UIAxes（exportgraphics），防止进程被杀留下损坏文件
-%   ax        : UIAxes 句柄
-%   finalPath : 最终路径（含扩展名）
-%   fmt       : 'png' | 'eps'
-% 实现：先写 "<name>.tmp<ext>"，exportgraphics 成功后再 movefile 原子改名。
-[dr, nm, ext] = fileparts(finalPath);
+% mu_save_ui ????UIAxesexportgraphics
+%   ax        : UIAxes 
+%   finalPath : ??%   fmt       : 'png' | 'eps'
+% ??"<name>.tmp<ext>"exportgraphics  movefile ??[dr, nm, ext] = fileparts(finalPath);
 if isempty(dr), dr = '.'; end
 tmpPath = fullfile(dr, [nm '.tmp' ext]);
 if exist(tmpPath,'file'), delete(tmpPath); end

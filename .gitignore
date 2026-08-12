@@ -1,10 +1,10 @@
-# MATLAB 产物 / 缓存
+# MATLAB products / build
 *.asv
 *.mex*
 *.o
 *.obj
 
-# 运行结果（按需保留时移除下列行）
+# Run results (keep locally, do not push)
 results/
 *.png
 *.jpg
@@ -12,23 +12,36 @@ results/
 *.eps
 *.fig
 *.mat
+*.xlsx
 
-# 日志 / 中间产物
+# Logs / intermediate
 *_out.txt
 reg_*.txt
 *.log
+*log.txt
 
-# 临时调试脚本（可选，依据你的偏好保留或忽略）
+# Temp debug scripts (underscore-prefixed leftovers)
+_*
+*.ps1
+
+# Obsolete / scratch matlab files
 dbg*.m
 dbg2.m
 probe*.m
 verify_*.m
+atest.m
+check_*.m
+diag_main.m
+diag_city.m
+cleanup_tmp.bat
+project_status_and_defects_review.md
 
-# 操作系统
+# OS / editor
 Thumbs.db
 .DS_Store
-
-# 编辑器 / IDE
 .vscode/
 .idea/
 *.swp
+
+# IDE internal data (do not push)
+.codebuddy/

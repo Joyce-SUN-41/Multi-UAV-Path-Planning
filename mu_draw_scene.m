@@ -415,7 +415,7 @@ patch(ax,'Vertices',V,'Faces',(1:nseg),'FaceColor','none', ...
     'EdgeColor',[0.30 0.55 0.78],'EdgeAlpha',0.9,'LineWidth',1.2,'LineStyle','-');
 % 波纹线（水面平行短纹，增强水感）
 for k=1:2
-    off = k*1.6;
+    off = k*2.5;
     Vr = [poly(:,1)+off, poly(:,2)+off, z*ones(nseg,1)];
     plot3(ax, Vr(:,1), Vr(:,2), Vr(:,3), 'Color',[0.60 0.78 0.90], ...
         'LineWidth',0.4,'LineStyle',':');
@@ -600,49 +600,54 @@ function drawBridge(ax, o, edgeC)
 % 跨江/跨谷大桥（L2 立体交通层）：路面板（薄 box，沿 p1->p2）+ 两侧栏杆 + 桥墩
 % 桥身用偏暖色（混凝土灰+浅橙面层），与冷蓝色建筑形成色彩对比，使桥在密集城区
 % 里"跳出来"，呈现立体交通的视觉层次。
+% 支持多段折线桥（弧线匝道/盘桥）：centerline 为 Nx2 (N>=2)，逐段绘制。
 hold(ax,'on');
-p1 = o.centerline(1,:); p2 = o.centerline(2,:);
-deckZ = o.deckZ; w = o.width/2;
-dir = (p2-p1)/norm(p2-p1); perp = [-dir(2) dir(1)];
-% 桥面中心段端点（向两端各缩 w 避免与桥墩重叠）
-c1 = p1 + dir*w; c2 = p2 - dir*w;
-% 路面板：以桥长方向为轴、宽 2w、厚 2m 的盒体（8 顶点）
-z0 = deckZ; z1 = deckZ + 2;
-cc = (c1+c2)/2;
-Lh = norm(c2-c1)/2;
-% 局部坐标盒：x 沿 dir, y 沿 perp, z 竖直
-Vloc = [-Lh -w z0; Lh -w z0; Lh w z0; -Lh w z0; -Lh -w z1; Lh -w z1; Lh w z1; -Lh w z1];
-R = [dir(1) dir(2) 0; perp(1) perp(2) 0; 0 0 1];   % 3x3 旋转（dir,perp 为 1x2 正交单位）
-V = (R * Vloc.').';   % 转世界坐标（8x3，z 为世界竖直）
-V(:,1) = V(:,1) + cc(1); V(:,2) = V(:,2) + cc(2);   % cc 为 1x2 平面中心
-faces = [5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
-% 桥身改用暖色调（混凝土+沥青混合灰），与冷蓝色楼形成对比
-shade = [1.05 0.92 0.84 0.90 0.98];
-for f=1:5
-    fc = min(1, [0.78 0.74 0.68]*shade(f));   % 暖灰，比楼更黄/橙
-    patch(ax,'Vertices',V,'Faces',faces(f,:),'FaceColor',fc,'EdgeColor',edgeC, ...
-        'EdgeAlpha',0.4,'LineWidth',0.5,'FaceLighting','none');
-end
-% 桥面顶层亮黄标线（中央线，沿桥长方向）——使桥在远视角也可辨
-plot3(ax, [cc(1)-dir(1)*Lh cc(1)+dir(1)*Lh], ...
-    [cc(2)-dir(2)*Lh cc(2)+dir(2)*Lh], ...
-    [deckZ+2.05 deckZ+2.05], 'Color',[0.95 0.85 0.30],'LineWidth',1.2);
-% 栏杆（沿桥长两侧边，略高于桥面）
-for sgn=[-1 1]
-    e1 = cc + dir*Lh + perp*(sgn*w); e2 = cc - dir*Lh + perp*(sgn*w);
-    plot3(ax, [e1(1) e2(1)], [e1(2) e2(2)], [z1 z1], 'Color',edgeC,'LineWidth',0.8);
-end
+cl = o.centerline; n = size(cl,1);
+w = o.width/2;
+dZ = o.deckZ;
+if isscalar(dZ), zA = dZ; zB = dZ; else zA = dZ(1); zB = dZ(end); end
 % 桥墩（pillars 每行 = [x y baseZ]，柱从地形基底到桥面，用粗线+半透明矩形 box）
 for pi=1:size(o.pillars,1)
     pc = o.pillars(pi,:);
-    % 用 box 代替线（更具实体感）：底部 4x4 矩形从地形到桥面
+    zTop = zA; % 墩顶取桥起始高度（近似，盘桥/匝道墩顶随段变化由逐段补充）
     Vp = [pc(1)-2 pc(2)-2 pc(3); pc(1)+2 pc(2)-2 pc(3); ...
           pc(1)+2 pc(2)+2 pc(3); pc(1)-2 pc(2)+2 pc(3); ...
-          pc(1)-2 pc(2)-2 deckZ; pc(1)+2 pc(2)-2 deckZ; ...
-          pc(1)+2 pc(2)+2 deckZ; pc(1)-2 pc(2)+2 deckZ];
+          pc(1)-2 pc(2)-2 zTop; pc(1)+2 pc(2)-2 zTop; ...
+          pc(1)+2 pc(2)+2 zTop; pc(1)-2 pc(2)+2 zTop];
     facesP = [5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
     patch(ax,'Vertices',Vp,'Faces',facesP,'FaceColor',[0.70 0.66 0.60], ...
         'EdgeColor',edgeC,'EdgeAlpha',0.35,'LineWidth',0.4,'FaceLighting','none');
+end
+% 逐段绘制路面板 + 栏杆 + 标线
+for i=1:n-1
+    p1 = cl(i,:); p2 = cl(i+1,:);
+    tmid = (i-0.5)/(n-1);
+    deckZ = zA + (zB - zA)*tmid;       % 沿桥长插值 deckZ
+    dir = (p2-p1)/norm(p2-p1); perp = [-dir(2) dir(1)];
+    c1 = p1 + dir*w; c2 = p2 - dir*w;
+    z0 = deckZ; z1 = deckZ + 2;
+    cc = (c1+c2)/2;
+    Lh = norm(c2-c1)/2;
+    Vloc = [-Lh -w z0; Lh -w z0; Lh w z0; -Lh w z0; -Lh -w z1; Lh -w z1; Lh w z1; -Lh w z1];
+    R = [dir(1) dir(2) 0; perp(1) perp(2) 0; 0 0 1];
+    V = (R * Vloc.').';   % 转世界坐标
+    V(:,1) = V(:,1) + cc(1); V(:,2) = V(:,2) + cc(2);
+    faces = [5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
+    shade = [1.05 0.92 0.84 0.90 0.98];
+    for f=1:5
+        fc = min(1, [0.78 0.74 0.68]*shade(f));
+        patch(ax,'Vertices',V,'Faces',faces(f,:),'FaceColor',fc,'EdgeColor',edgeC, ...
+            'EdgeAlpha',0.4,'LineWidth',0.5,'FaceLighting','none');
+    end
+    % 标线
+    plot3(ax, [cc(1)-dir(1)*Lh cc(1)+dir(1)*Lh], ...
+        [cc(2)-dir(2)*Lh cc(2)+dir(2)*Lh], ...
+        [deckZ+2.05 deckZ+2.05], 'Color',[0.95 0.85 0.30],'LineWidth',1.0);
+    % 栏杆
+    for sgn=[-1 1]
+        e1 = cc + dir*Lh + perp*(sgn*w); e2 = cc - dir*Lh + perp*(sgn*w);
+        plot3(ax, [e1(1) e2(1)], [e1(2) e2(2)], [z1 z1], 'Color',edgeC,'LineWidth',0.8);
+    end
 end
 end
 

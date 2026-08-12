@@ -1,32 +1,27 @@
 function run_muav(varargin)
-% run_muav — 城市多无人机路径规划统一主调入口（命令行 / 无头批量友好）
-%
-% 用法 1（默认演示）：运行一组预设场景（p2p 三难度 + tour），并导出 PNG/EPS/XLSX
+% run_muav ?? / ??%
+%  1p2p ??+ tour??PNG/EPS/XLSX
 %   run_muav
 %
-% 用法 2（单场景自定义）：通过 Name/Value 指定单个场景参数，仅规划该场景并绘图
+%  2 Name/Value 
 %   run_muav('mode','tour','difficulty','hard','nUAV',8,'pop',60,'iter',140,'maxFE',150000,'seed',3)
 %   run_muav('mode','p2p','difficulty','medium','nUAV',12,'nCtrl',5,'pop',50,'iter',120)
 %
-% 用法 3（批量自定义）：传入 cell 数组的 case 列表（每个为 struct，字段见下方 DEFAULT_CASES）
-%   cases = { struct('tag','my1','mode','p2p','diff','easy','nUAV',6,'nCtrl',5,'pop',40,'iter',100,'maxFE',60000,'seed',2) };
+%  3 cell ??case  struct DEFAULT_CASES??%   cases = { struct('tag','my1','mode','p2p','diff','easy','nUAV',6,'nCtrl',5,'pop',40,'iter',100,'maxFE',60000,'seed',2) };
 %   run_muav('cases', cases)
 %
-% 通用可选参数：
-%   'outDir'   结果输出目录（默认 Multi-UAV-Path-Planning/results）
-%   'comms'    是否启用通信链路约束（true/false，默认 false；开启则 scene.w.comms=30）
-%   'wObstacle'/'wSmooth'/'wSeparation'/'wLength' 覆盖默认代价权重
-%   'caFun'    替换 CA 算法句柄（默认 @CAv9x），须满足"dim×pop 列优先"接口约定(L1)
+% 
+%   'outDir'   ??Multi-UAV-Path-Planning/results??%   'comms'    true/false??false scene.w.comms=30??%   'wObstacle'/'wSmooth'/'wSeparation'/'wLength' 
+%   'caFun'     CA ??@CAv9x??dimpop ??(L1)
 %
-% 依赖：本目录须含 mu_run_planner / mu_config / mu_draw_scene / mu_obstacle_dist /
-%       mu_savefig，且父目录须含 CAv9x（自动 addpath）。
-
-% ---------- 路径 ----------
+%  mu_run_planner / mu_config / mu_draw_scene / mu_obstacle_dist /
+%       mu_savefig??CAv9x??addpath??
+% ----------  ----------
 appDir = fileparts(mfilename('fullpath'));
 parentDir = fileparts(appDir);
 addpath(appDir); addpath(parentDir);
 
-% ---------- 解析参数 ----------
+% ----------  ----------
 p = inputParser;
 addParameter(p,'cases',{}, @iscell);
 addParameter(p,'outDir', fullfile(appDir,'results'));
@@ -36,7 +31,7 @@ addParameter(p,'wSmooth', 0.15);
 addParameter(p,'wSeparation', 25);
 addParameter(p,'wLength', 1.0);
 addParameter(p,'caFun', @CAv9x);
-% 单场景自定义快捷参数：提供任一即视为"只跑这一个场景"
+% ????
 addParameter(p,'mode', '');
 addParameter(p,'difficulty', '');
 addParameter(p,'nUAV', []);
@@ -48,7 +43,7 @@ addParameter(p,'seed', []);
 parse(p, varargin{:});
 opt = p.Results;
 
-% 默认演示场景（与 demo_muav 一致的五套配置）
+%  demo_muav ??DEFAULT_CASES = { ...
 DEFAULT_CASES = { ...
     struct('tag','p2p_easy',   'mode','p2p',  'diff','easy',   'nUAV',6,  'nCtrl',5, 'pop',40, 'iter',100, 'maxFE',60000,  'seed',2), ...
     struct('tag','p2p_medium', 'mode','p2p',  'diff','medium', 'nUAV',12, 'nCtrl',5, 'pop',50, 'iter',120, 'maxFE',100000, 'seed',2), ...
@@ -57,7 +52,7 @@ DEFAULT_CASES = { ...
     struct('tag','tour_hard',  'mode','tour', 'diff','hard',   'nUAV',8,  'nCtrl',[],'pop',60, 'iter',140, 'maxFE',150000, 'seed',3), ...
     };
 
-% 单场景自定义：若用户显式给了 mode/difficulty 等，则构造单个 case 覆盖默认
+%  mode/difficulty ??case 
 singleGiven = ~isempty(opt.mode) || ~isempty(opt.difficulty) || ...
               ~isempty(opt.nUAV) || ~isempty(opt.pop) || ~isempty(opt.maxFE);
 if singleGiven
@@ -78,7 +73,7 @@ else
     cases = opt.cases;
 end
 
-% 输出目录
+% 
 outDir = opt.outDir;
 if ~exist(outDir,'dir'), mkdir(outDir); end
 runTS = datestr(now, 'yyyy-mm-dd_HHMMSS');
@@ -90,18 +85,17 @@ nBldgAll=zeros(nC,1); nTowerAll=zeros(nC,1); nNoFlyAll=zeros(nC,1);
 nTreeAll=zeros(nC,1); nWaterAll=zeros(nC,1); terrainAll=zeros(nC,1); terrPenAll=zeros(nC,1);
 trajCell=cell(nC,1); sceneCell=cell(nC,1); modeCell=cell(nC,1); cvCell=cell(nC,1);
 
-fprintf('============ 城市多无人机路径规划 主调 run_muav ============\n');
-fprintf('共 %d 个场景 | 通信约束=%d | CA=%s\n', nC, opt.comms, func2str(opt.caFun));
+fprintf('============   run_muav ============\n');
+fprintf('??%d ??| =%d | CA=%s\n', nC, opt.comms, func2str(opt.caFun));
 
 for ci=1:nC
     c = cases{ci};
-    fprintf('\n[%d/%d] %s (%s, %d 机)...\n', ci, nC, c.tag, c.diff, c.nUAV);
+    fprintf('\n[%d/%d] %s (%s, %d ??...\n', ci, nC, c.tag, c.diff, c.nUAV);
     try
         if strcmp(c.mode,'tour')
-            % R6：tour 模式 nCtrl 由客户点数自动决定（2*(maxT+1)），用户显式传入无效，
-            % 给出提示避免误以为生效（与 mu_config 的 warning 一致）。
+            % R6tour  nCtrl 2*(maxT+1)??            % ??mu_config ??warning ??
             if ~isempty(opt.nCtrl)
-                warning('run_muav: tour 模式控制点数由客户点数自动决定，忽略 nCtrl=%g。', opt.nCtrl);
+                warning('run_muav: tour nCtrl ignored, got %g', opt.nCtrl);
             end
             [bx, cost, cv, trajs, sc] = mu_run_planner('tour', ...
                 'pop',c.pop,'iter',c.iter,'maxFE',c.maxFE,'nUAV',c.nUAV,'seed',c.seed, ...
@@ -116,32 +110,30 @@ for ci=1:nC
         continue;
     end
 
-    % 覆盖代价权重（若用户指定）
-    sc.w.obstacle   = opt.wObstacle;
+    % ??    sc.w.obstacle   = opt.wObstacle;
     sc.w.smooth     = opt.wSmooth;
     sc.w.separation = opt.wSeparation;
     sc.w.length     = opt.wLength;
-    sc.w.comms      = opt.comms * 30;   % 启用则 30，关闭则 0
+    sc.w.comms      = opt.comms * 30;   % ??30 0
 
-    % 诊断：最大障碍穿透（与 mu_cost_tour 口径一致，避免误判）
-    % R19 修复：此前 mu_obstacle_dist(trajs{k}, sc.obstacles, 0) 把地形(terrain, 软约束)
-    % 也以 margin=0 计入 mp，导致 mp 虚高且无法反映真实实体障碍穿透。现拆分为：
-    %   实体障碍（不含 terrain）用 safeMargin；地形贴合单独报告（terrainMargin）；
-    %   动态车辆穿透对所有机做回放诊断（此前仅测 trajs{1}）。
+    % ??mu_cost_tour ??    % R19 ??mu_obstacle_dist(trajs{k}, sc.obstacles, 0) ??terrain, ??
+    %  margin=0  mp??mp 
+    %   ??terrain safeMarginterrainMargin
+    %    trajs{1}??    mp=0; terrPen=0; ln=0;
     mp=0; terrPen=0; ln=0;
     obsTypes = {sc.obstacles.type};
-    obsEnt   = sc.obstacles(~strcmp(obsTypes,'terrain'));    % 实体障碍（楼/塔/禁飞/树/水/桥/灯/牌）
-    obsTerr  = sc.obstacles(strcmp(obsTypes,'terrain'));     % 地形（软约束，单独口径）
+    obsEnt   = sc.obstacles(~strcmp(obsTypes,'terrain'));    % /??/????????
+    obsTerr  = sc.obstacles(strcmp(obsTypes,'terrain'));     % 
     for k=1:numel(trajs)
         [~,o] = mu_obstacle_dist(trajs{k}, obsEnt, sc.safeMargin);
-        mp = max(mp, max(0, -min(o)));   % 实体穿透深度（安全时=0，避免负值误报）
+        mp = max(mp, max(0, -min(o)));   % ??0
         if ~isempty(obsTerr)
             [~,ot] = mu_obstacle_dist(trajs{k}, obsTerr, sc.terrainMargin);
             terrPen = max(terrPen, max(0, -min(ot)));
         end
         ln = ln + sum(sqrt(sum(diff(trajs{k},1,1).^2,2)));
     end
-    % 阶段D：动态车辆穿透（接入代价后应有避让；对所有机做独立回放诊断）
+    % D
     vehMax = 0;
     if isfield(sc,'dynamics') && ~isempty(sc.dynamics) && isfield(sc.dynamics,'vehicles')
         for k=1:numel(trajs)
@@ -163,20 +155,19 @@ for ci=1:nC
     terrainAll(ci)= ~isempty(sc.terrainF);
     terrPenAll(ci)= terrPen;
     trajCell{ci}=trajs; sceneCell{ci}=sc; modeCell{ci}=c.mode; cvCell{ci}=cv;
-    fprintf('  cost=%.2f  maxStaticPen=%.3f  terrainPen=%.3f  maxVehPen=%.3f  len=%.1f  楼=%d 塔=%d 禁飞=%d 树=%d 水=%d 地形=%d\n', ...
+    fprintf('  cost=%.2f  maxStaticPen=%.3f  terrainPen=%.3f  maxVehPen=%.3f  len=%.1f  ??%d ??%d =%d ??%d ??%d =%d\n', ...
         cost, mp, terrPen, vehMax, ln, nBldgAll(ci), nTowerAll(ci), nNoFlyAll(ci), nTreeAll(ci), nWaterAll(ci), terrainAll(ci));
 end
 
-% ---------- 绘图与导出 ----------
-fprintf('\n=== 绘图与导出 ===\n');
+% ---------- ??----------
+fprintf('\n=== ??===\n');
 for ci=1:nC
     if isempty(trajCell{ci}), continue; end
     c = cases{ci}; sc = sceneCell{ci}; trajs = trajCell{ci};
     fig = figure('Name',c.tag,'Color','w','Visible','off');
     ax = axes('Parent',fig,'Color','w');
     hold(ax,'on'); grid(ax,'on'); axis(ax,'equal');
-    % 阶段D：传 tCur=0 渲染静态初始车流（如需动态回放请用 GUI：MUAVPlanner）
-    sc.tCur = 0;
+    % D tCur=0 ??GUIMUAVPlanner??    sc.tCur = 0;
     mu_draw_scene(sc, trajs, modeCell{ci}, ax);
     view(ax, [38 26]);
     title(ax, sprintf('%s  (%s)  cost=%.1f', upper(c.tag), c.diff, costAll(ci)), 'Interpreter','none');
@@ -188,7 +179,7 @@ for ci=1:nC
     close(fig);
 end
 
-% 收敛曲线（前三个 p2p 场景对比）
+%  p2p ??figC = figure('Name','MUAV convergence','Color','w','Visible','off');
 figC = figure('Name','MUAV convergence','Color','w','Visible','off');
 axC = axes('Parent',figC,'Color','w');
 hold(axC,'on'); grid(axC,'on');
@@ -206,14 +197,14 @@ end
 if ~isempty(lgd)
     legend(axC, lgd{:}, 'TextColor',[0.2 0.2 0.2], 'Color',[1 1 1], 'EdgeColor',[0.7 0.7 0.7], 'Interpreter','none');
 end
-title(axC, 'CA 收敛曲线 (P2P 场景)','Color',[0.15 0.20 0.30]);
-xlabel(axC, '迭代','Color',[0.3 0.35 0.42]); ylabel(axC, '最优代价 (log)','Color',[0.3 0.35 0.42]);
+title(axC, 'CA  (P2P )','Color',[0.15 0.20 0.30]);
+xlabel(axC, '','Color',[0.3 0.35 0.42]); ylabel(axC, '??(log)','Color',[0.3 0.35 0.42]);
 drawnow;
 mu_savefig(figC, fullfile(outDir, sprintf('run_convergence_%s.png', runTS)), 'png', 300);
 mu_savefig(figC, fullfile(outDir, sprintf('run_convergence_%s.eps', runTS)), 'eps', 300);
 close(figC);
 
-% ---------- XLSX 汇总 ----------
+% ---------- XLSX ??----------
 tagNames = cell(nC,1); diffAll = cell(nC,1);
 for ci=1:nC
     if isempty(trajCell{ci}), tagNames{ci}=cases{ci}.tag; diffAll{ci}='-'; continue; end
@@ -236,26 +227,27 @@ catch ME
     rethrow(ME);
 end
 
-fprintf('\n全部场景完成。\n');
-fprintf('已保存 PNG / EPS / XLSX 至: %s\n', outDir);
-fprintf('本次运行时间戳: %s\n', runTS);
-end
+fprintf('\n\n');
+fprintf('??PNG / EPS / XLSX ?? %s\n', outDir);
+fprintf('?? %s\n', runTS);
 
-% 取值助手：用户未指定(空)时用默认 def；枚举类做合法性校验
+% ???? def??function v = validOpt(val, def, allowed)
 function v = validOpt(val, def, allowed)
 if isempty(val)
     v = def; return;
 end
-if iscell(allowed)   % 枚举校验
+if iscell(allowed)   % 
     if ~any(strcmpi(val, allowed))
-        error('run_muav: 非法取值 "%s"，应为 {%s}', val, strjoin(allowed,', '));
+        error('run_muav: ??"%s"??{%s}', val, strjoin(allowed,', '));
     end
     v = val;
-else                % 数值范围校验
-    lo = allowed(1); hi = allowed(2);
+else
+    lo = allowed(1); hi = allowed(2);                % ??    lo/hi 范围下界/上界
     if val < lo || val > hi
-        error('run_muav: 取值 %g 超出范围 [%g, %g]', val, lo, hi);
+        error('run_muav: ??%g  [%g, %g]', val, lo, hi);
     end
     v = val;
 end
 end
+
+end   % 主函数 run_muav 结尾（嵌套函数 validOpt 已在其内定义）
