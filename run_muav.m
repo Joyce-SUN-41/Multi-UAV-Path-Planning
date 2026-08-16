@@ -3,9 +3,9 @@ function run_muav(varargin)
 %  1p2p ??+ tour??PNG/EPS/XLSX
 %   run_muav
 %
-%  2 Name/Value 
-%   run_muav('mode','tour','difficulty','hard','nUAV',8,'pop',60,'iter',140,'maxFE',150000,'seed',3)
-%   run_muav('mode','p2p','difficulty','medium','nUAV',12,'nCtrl',5,'pop',50,'iter',120)
+%  2 Name/Value (示例；当前默认档位见下方 DEFAULT_CASES，方案B：nCtrl=12,pop/iter 大幅加,maxFE 顶满)
+%   run_muav('mode','tour','difficulty','hard','nUAV',8,'pop',180,'iter',450,'maxFE',300000,'seed',3)
+%   run_muav('mode','p2p','difficulty','medium','nUAV',12,'nCtrl',12,'pop',160,'iter',400,'maxFE',280000,'seed',2)
 %
 %  3 cell ??case  struct DEFAULT_CASES??%   cases = { struct('tag','my1','mode','p2p','diff','easy','nUAV',6,'nCtrl',5,'pop',40,'iter',100,'maxFE',60000,'seed',2) };
 %   run_muav('cases', cases)
@@ -44,12 +44,16 @@ parse(p, varargin{:});
 opt = p.Results;
 
 %  demo_muav ??DEFAULT_CASES = { ...
+% 高维精细化档位：nCtrl 提升曲线节点自由度，pop/iter 提高搜索充分度，
+% maxFE 按 pop*iter*2*1.5 配平（CAv9x 双生观测每次占 2 次评估，留余量防提前截断），
+% seed 固定以便复现对照。tour 的 nCtrl 由任务数自动决定（mu_config），此处忽略。
+% 更精细档位（方案B：激进档，逼近 validOpt 上限）：nCtrl=12, pop/iter 大幅加，maxFE 顶满。
 DEFAULT_CASES = { ...
-    struct('tag','p2p_easy',   'mode','p2p',  'diff','easy',   'nUAV',6,  'nCtrl',5, 'pop',40, 'iter',100, 'maxFE',60000,  'seed',2), ...
-    struct('tag','p2p_medium', 'mode','p2p',  'diff','medium', 'nUAV',12, 'nCtrl',5, 'pop',50, 'iter',120, 'maxFE',100000, 'seed',2), ...
-    struct('tag','p2p_hard',   'mode','p2p',  'diff','hard',   'nUAV',20, 'nCtrl',5, 'pop',60, 'iter',140, 'maxFE',150000, 'seed',2), ...
-    struct('tag','tour_medium','mode','tour', 'diff','medium', 'nUAV',12, 'nCtrl',[],'pop',50, 'iter',120, 'maxFE',110000, 'seed',3), ...
-    struct('tag','tour_hard',  'mode','tour', 'diff','hard',   'nUAV',8,  'nCtrl',[],'pop',60, 'iter',140, 'maxFE',150000, 'seed',3), ...
+    struct('tag','p2p_easy',   'mode','p2p',  'diff','easy',   'nUAV',6,  'nCtrl',12,'pop',120, 'iter',300, 'maxFE',160000, 'seed',2), ...
+    struct('tag','p2p_medium', 'mode','p2p',  'diff','medium', 'nUAV',12, 'nCtrl',12,'pop',160, 'iter',400, 'maxFE',280000, 'seed',2), ...
+    struct('tag','p2p_hard',   'mode','p2p',  'diff','hard',   'nUAV',20, 'nCtrl',12,'pop',180, 'iter',450, 'maxFE',300000, 'seed',2), ...
+    struct('tag','tour_medium','mode','tour', 'diff','medium', 'nUAV',12, 'nCtrl',[],'pop',160, 'iter',400, 'maxFE',280000, 'seed',3), ...
+    struct('tag','tour_hard',  'mode','tour', 'diff','hard',   'nUAV',8,  'nCtrl',[],'pop',180, 'iter',450, 'maxFE',300000, 'seed',3), ...
     };
 
 %  mode/difficulty ??case 
@@ -76,21 +80,24 @@ end
 % 
 outDir = opt.outDir;
 if ~exist(outDir,'dir'), mkdir(outDir); end
-runTS = datestr(now, 'yyyy-mm-dd_HHMMSS');
+runTS = char(datetime('now','Format','yyyy-MM-dd_HHmmSS'));
+% 每组运行产物归档到带时间戳的二级目录，便于管理
+runDir = fullfile(outDir, ['run_' runTS]);
+if ~exist(runDir,'dir'), mkdir(runDir); end
 
 nC = numel(cases);
 costAll=zeros(nC,1); penAll=zeros(nC,1); lenAll=zeros(nC,1);
 nUAVAll=zeros(nC,1); nObsAll=zeros(nC,1); nTaskAll=zeros(nC,1);
 nBldgAll=zeros(nC,1); nTowerAll=zeros(nC,1); nNoFlyAll=zeros(nC,1);
 nTreeAll=zeros(nC,1); nWaterAll=zeros(nC,1); terrainAll=zeros(nC,1); terrPenAll=zeros(nC,1);
-trajCell=cell(nC,1); sceneCell=cell(nC,1); modeCell=cell(nC,1); cvCell=cell(nC,1);
+trajCell=cell(nC,1); sceneCell=cell(nC,1); modeCell=cell(nC,1); cvCell=cell(nC,1); bxCell=cell(nC,1);
 
 fprintf('============   run_muav ============\n');
-fprintf('??%d ??| =%d | CA=%s\n', nC, opt.comms, func2str(opt.caFun));
+fprintf('%d cases | comms=%d | CA=%s\n', nC, opt.comms, func2str(opt.caFun));
 
 for ci=1:nC
     c = cases{ci};
-    fprintf('\n[%d/%d] %s (%s, %d ??...\n', ci, nC, c.tag, c.diff, c.nUAV);
+    fprintf('\n[%d/%d] %s (%s, %d UAV)...\n', ci, nC, c.tag, c.diff, c.nUAV);
     try
         if strcmp(c.mode,'tour')
             % R6tour  nCtrl 2*(maxT+1)??            % ??mu_config ??warning ??
@@ -99,16 +106,17 @@ for ci=1:nC
             end
             [bx, cost, cv, trajs, sc] = mu_run_planner('tour', ...
                 'pop',c.pop,'iter',c.iter,'maxFE',c.maxFE,'nUAV',c.nUAV,'seed',c.seed, ...
-                'caFun',opt.caFun);
+                'difficulty',c.diff, 'caFun',opt.caFun);
         else
             [bx, cost, cv, trajs, sc] = mu_run_planner('p2p', ...
                 'pop',c.pop,'iter',c.iter,'maxFE',c.maxFE,'nUAV',c.nUAV,'nCtrl',c.nCtrl,'seed',c.seed, ...
-                'caFun',opt.caFun);
+                'difficulty',c.diff, 'caFun',opt.caFun);
         end
     catch ME
         fprintf('  FAIL: %s\n', ME.message);
         continue;
     end
+    bxCell{ci} = bx;  % 绑定当前 case 的 CA 最优决策变量，避免循环结束后 bx 错配
 
     % ??    sc.w.obstacle   = opt.wObstacle;
     sc.w.smooth     = opt.wSmooth;
@@ -155,29 +163,55 @@ for ci=1:nC
     terrainAll(ci)= ~isempty(sc.terrainF);
     terrPenAll(ci)= terrPen;
     trajCell{ci}=trajs; sceneCell{ci}=sc; modeCell{ci}=c.mode; cvCell{ci}=cv;
-    fprintf('  cost=%.2f  maxStaticPen=%.3f  terrainPen=%.3f  maxVehPen=%.3f  len=%.1f  ??%d ??%d =%d ??%d ??%d =%d\n', ...
+    fprintf('  cost=%.2f  maxStaticPen=%.3f  terrainPen=%.3f  maxVehPen=%.3f  len=%.1f  bldg=%d tower=%d nofly=%d tree=%d water=%d terrain=%d\n', ...
         cost, mp, terrPen, vehMax, ln, nBldgAll(ci), nTowerAll(ci), nNoFlyAll(ci), nTreeAll(ci), nWaterAll(ci), terrainAll(ci));
 end
 
-% ---------- ??----------
-fprintf('\n=== ??===\n');
+% ---------- 多视角图导出（透视/俯视/侧视/近景，看清路径）----------
+fprintf('\n=== multi-view figures ===\n');
 for ci=1:nC
     if isempty(trajCell{ci}), continue; end
     c = cases{ci}; sc = sceneCell{ci}; trajs = trajCell{ci};
-    fig = figure('Name',c.tag,'Color','w','Visible','off');
-    ax = axes('Parent',fig,'Color','w');
-    hold(ax,'on'); grid(ax,'on'); axis(ax,'equal');
-    % D tCur=0 ??GUIMUAVPlanner??    sc.tCur = 0;
-    mu_draw_scene(sc, trajs, modeCell{ci}, ax);
-    view(ax, [38 26]);
-    title(ax, sprintf('%s  (%s)  cost=%.1f', upper(c.tag), c.diff, costAll(ci)), 'Interpreter','none');
-    drawnow;
-    pngFile = fullfile(outDir, sprintf('run_%s_%s.png', c.tag, runTS));
-    epsFile = fullfile(outDir, sprintf('run_%s_%s.eps', c.tag, runTS));
-    mu_savefig(fig, pngFile, 'png', 300);
-    mu_savefig(fig, epsFile, 'eps', 300);
-    close(fig);
+    % cost 格式化：大数量级用科学计数法，避免标题被长数字撑满
+    if abs(costAll(ci)) >= 1e6
+        costStr = sprintf('%.2e', costAll(ci));
+    else
+        costStr = sprintf('%.1f', costAll(ci));
+    end
+    try
+        mu_export_views(sc, trajs, modeCell{ci}, runDir, c.tag, runTS, costStr);
+        fprintf('  %s views exported (persp/top/sideX/sideY/closeup)\n', c.tag);
+    catch ME
+        % 单个用例的视图渲染偶发失败不应连累整批：跳过其图，保存循环仍会生成 .mat
+        fprintf('  WARN: %s view export failed (%s); skipping figures, results still saved.\n', c.tag, ME.message);
+    end
 end
+
+% ---------- 保存完整结果为 .mat（精致存储：可复现 + 自描述）----------
+for ci=1:nC
+    if isempty(trajCell{ci}), continue; end
+    c = cases{ci}; sc = sceneCell{ci}; trajs = trajCell{ci};
+    % 组装单用例结果结构体；bestX 仅在 mu_run_planner 直接调用时可得，
+    % run_muav 主循环未保留 bestX，这里用空占位，trajs 作为快查副本已足够回放。
+    res = struct();
+    res.tag        = c.tag;
+    res.mode       = c.mode;
+    res.difficulty = sc.difficulty;
+    res.scene      = sc;
+    res.trajs      = trajs;
+    res.bestX      = bxCell{ci};   % mu_run_planner 第1输出即 CA 最优决策变量，可重新解码轨迹（按 case 绑定，防错配）
+    res.bestCost   = costAll(ci);
+    res.curve      = cvCell{ci};
+    res.opt        = struct('pop',c.pop,'iter',c.iter,'maxFE',c.maxFE, ...
+                        'nUAV',c.nUAV,'nCtrl',c.nCtrl,'seed',c.seed, ...
+                        'wObstacle',opt.wObstacle,'wSmooth',opt.wSmooth, ...
+                        'wSeparation',opt.wSeparation,'wLength',opt.wLength, ...
+                        'comms',opt.comms);
+    res.metrics    = struct('maxStaticPen',penAll(ci),'maxTerrainPen',terrPenAll(ci), ...
+                        'totalLength',lenAll(ci),'maxVehPen',vehMax);
+    mu_save_result(res, runDir, 'tag', c.tag);
+    end
+
 
 %  p2p ??figC = figure('Name','MUAV convergence','Color','w','Visible','off');
 figC = figure('Name','MUAV convergence','Color','w','Visible','off');
@@ -191,17 +225,18 @@ for ci=1:nC
     if strcmp(modeCell{ci},'p2p') && cnt<3
         cnt=cnt+1;
         semilogy(axC, cvCell{ci}, 'Color',cols(cnt,:), 'LineWidth',1.8);
-        lgd{end+1} = cases{ci}.tag;
+        lgd{end+1} = sprintf('scenario%d', cnt);
     end
 end
 if ~isempty(lgd)
-    legend(axC, lgd{:}, 'TextColor',[0.2 0.2 0.2], 'Color',[1 1 1], 'EdgeColor',[0.7 0.7 0.7], 'Interpreter','none');
+    lgdH = legend(axC, lgd{:}, 'TextColor',[0.2 0.2 0.2], 'Color',[1 1 1], 'EdgeColor',[0.7 0.7 0.7], 'Interpreter','none');
+    lgdH.FontSize = 13; lgdH.FontWeight = 'bold';
 end
 title(axC, 'CA  (P2P )','Color',[0.15 0.20 0.30]);
 xlabel(axC, '','Color',[0.3 0.35 0.42]); ylabel(axC, '??(log)','Color',[0.3 0.35 0.42]);
 drawnow;
-mu_savefig(figC, fullfile(outDir, sprintf('run_convergence_%s.png', runTS)), 'png', 300);
-mu_savefig(figC, fullfile(outDir, sprintf('run_convergence_%s.eps', runTS)), 'eps', 300);
+mu_savefig(figC, fullfile(runDir, sprintf('run_convergence_%s.png', runTS)), 'png', 300);
+mu_savefig(figC, fullfile(runDir, sprintf('run_convergence_%s.eps', runTS)), 'eps', 300);
 close(figC);
 
 % ---------- XLSX ??----------
@@ -215,7 +250,7 @@ summaryT = table( ...
     nUAVAll, nObsAll, nBldgAll, nTowerAll, nNoFlyAll, nTreeAll, nWaterAll, terrainAll, nTaskAll, ...
     round(costAll,4), round(penAll,4), round(terrPenAll,4), round(lenAll,3), ...
     'VariableNames', {'Case','Mode','Difficulty','nUAV','nObstacles','nBldg','nTower','nNoFly','nTree','nWater','terrainOn','nTasks','bestCost','maxStaticPen','maxTerrainPen','totalLength'});
-xlsxFile = fullfile(outDir, sprintf('run_muav_results_%s.xlsx', runTS));
+xlsxFile = fullfile(runDir, sprintf('run_muav_results_%s.xlsx', runTS));
 [dr, nm, ext] = fileparts(xlsxFile);
 tmpX = fullfile(dr, [nm '.tmp' ext]);
 if exist(tmpX,'file'), delete(tmpX); end
@@ -228,8 +263,8 @@ catch ME
 end
 
 fprintf('\n\n');
-fprintf('??PNG / EPS / XLSX ?? %s\n', outDir);
-fprintf('?? %s\n', runTS);
+fprintf('PNG / EPS / XLSX written to %s\n', runDir);
+fprintf('run timestamp: %s\n', runTS);
 
 % ???? def??function v = validOpt(val, def, allowed)
 function v = validOpt(val, def, allowed)

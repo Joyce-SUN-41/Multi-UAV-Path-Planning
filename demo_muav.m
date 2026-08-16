@@ -5,19 +5,22 @@
 appDir = fileparts(mfilename('fullpath'));   % ??parentDir = fileparts(appDir);                 % ??CAv9x??addpath(appDir); addpath(parentDir);
 %  results/ ??outDir = fullfile(appDir, 'results');
 if ~exist(outDir,'dir'), mkdir(outDir); end
-runTS = datestr(now, 'yyyy-mm-dd_HHMMSS');
+runTS = char(datetime('now','Format','yyyy-MM-dd_HHmmSS'));
 
-fprintf('=== Step1:  CA  (sphere, dim=10) ===\n');
+fprintf('=== Step1: CA sphere test (dim=10) ===\n');
 sphere_f = @(x) sum(x.^2, 1);   %  -> 1xN
 [bs, bx, cv] = CAv9x(sphere_f, 10, 30, 60, -5*ones(1,10), 5*ones(1,10), struct('maxFE',9000,'seed',1));
-fprintf('  sphere best = %.3e, ??= %.3e\n', bs, cv(end));
+fprintf('  sphere best = %.3e, curve_end = %.3e\n', bs, cv(end));
 
 %  + 
+% 高维精细化档位（与 run_muav DEFAULT_CASES 对齐）：nCtrl 提升曲线节点自由度，
+% pop/iter 提高搜索充分度，maxFE 按 pop*iter*2*1.5 配平，seed 固定便于复现。
+% 更精细档位（方案B：激进档，与 run_muav DEFAULT_CASES 对齐）
 cases = { ...
-    struct('tag','p2p_easy',   'mode','p2p',  'diff','easy',   'nUAV',6,  'nCtrl',5, 'pop',40,'iter',100,'maxFE',60000,'seed',2), ...
-    struct('tag','p2p_medium', 'mode','p2p',  'diff','medium', 'nUAV',12, 'nCtrl',5, 'pop',50,'iter',120,'maxFE',100000,'seed',2), ...
-    struct('tag','p2p_hard',   'mode','p2p',  'diff','hard',   'nUAV',20, 'nCtrl',5, 'pop',60,'iter',140,'maxFE',150000,'seed',2), ...
-    struct('tag','tour_medium','mode','tour', 'diff','medium', 'nUAV',12, 'nCtrl',[],'pop',50,'iter',120,'maxFE',110000,'seed',3), ...
+    struct('tag','p2p_easy',   'mode','p2p',  'diff','easy',   'nUAV',6,  'nCtrl',12,'pop',120,'iter',300,'maxFE',160000,'seed',2), ...
+    struct('tag','p2p_medium', 'mode','p2p',  'diff','medium', 'nUAV',12, 'nCtrl',12,'pop',160,'iter',400,'maxFE',280000,'seed',2), ...
+    struct('tag','p2p_hard',   'mode','p2p',  'diff','hard',   'nUAV',20, 'nCtrl',12,'pop',180,'iter',450,'maxFE',300000,'seed',2), ...
+    struct('tag','tour_medium','mode','tour', 'diff','medium', 'nUAV',12, 'nCtrl',[],'pop',160,'iter',400,'maxFE',280000,'seed',3), ...
     };
 
 nC = numel(cases);
@@ -27,10 +30,10 @@ nBldgAll = zeros(nC,1); nTowerAll = zeros(nC,1); nNoFlyAll = zeros(nC,1);
 nTreeAll = zeros(nC,1); nWaterAll = zeros(nC,1); terrainAll = zeros(nC,1);
 trajCell = cell(nC,1); sceneCell = cell(nC,1); modeCell = cell(nC,1); cvCell = cell(nC,1);
 
-fprintf('\n=== Step2/3:  %d ??===\n', nC);
+fprintf('\n=== Step2/3: %d cases ===\n', nC);
 for ci=1:nC
     c = cases{ci};
-    fprintf('  [%d/%d] %s (%s, %d ??...\n', ci, nC, c.tag, c.diff, c.nUAV);
+    fprintf('  [%d/%d] %s (%s, %d UAV)...\n', ci, nC, c.tag, c.diff, c.nUAV);
     if strcmp(c.mode,'tour')
         [~, cost, cv, trajs, sc] = mu_run_planner('tour', ...
             'pop',c.pop,'iter',c.iter,'maxFE',c.maxFE,'nUAV',c.nUAV,'seed',c.seed);
@@ -55,15 +58,15 @@ for ci=1:nC
     nWaterAll(ci) = sum(strcmp(obTypes,'water'));
     terrainAll(ci)= ~isempty(sc.terrainF);
     trajCell{ci}=trajs; sceneCell{ci}=sc; modeCell{ci}=c.mode; cvCell{ci}=cv;
-    fprintf('    cost=%.2f  maxPen=%.3f  len=%.1f  ??%d ??%d =%d ??%d ??%d =%d\n', ...
+    fprintf('    cost=%.2f  maxPen=%.3f  len=%.1f  bldg=%d tower=%d nofly=%d tree=%d water=%d terrain=%d\n', ...
         cost, mp, ln, nBldgAll(ci), nTowerAll(ci), nNoFlyAll(ci), nTreeAll(ci), nWaterAll(ci), terrainAll(ci));
 end
 
-fprintf('\n=== Step4: ??===\n');
+fprintf('\n=== Step4: export ===\n');
 for ci=1:nC
     c = cases{ci}; sc = sceneCell{ci}; trajs = trajCell{ci};
     %  axes ??mu_draw_scene GUI  gca 
-    %  figure ??opengl headless/-batch ??opengl ??    %  print  "Unable to use OpenGL for printing" ??    fig = figure('Name',c.tag,'Color','w','Visible','off');
+    %  figure ??opengl headless/-batch ??opengl ??    %  print  "Unable to use OpenGL for printing" ??    fig = figure('Name',c.tag,'Color','w','Visible','off', 'Position',[100 100 760 760]);
     ax = axes('Parent',fig,'Color','w');
     hold(ax,'on'); grid(ax,'on'); axis(ax,'equal');
     mu_draw_scene(sc, trajs, modeCell{ci}, ax);
@@ -87,9 +90,10 @@ lgd = {};
 for ci=1:3
     cv = cvCell{ci};
     semilogy(axC, cv, 'Color',cols(ci,:), 'LineWidth',1.8);
-    lgd{end+1} = cases{ci}.tag;
+    lgd{end+1} = sprintf('scenario%d', ci);
 end
-legend(axC, lgd{:}, 'TextColor',[0.2 0.2 0.2], 'Color',[1 1 1], 'EdgeColor',[0.7 0.7 0.7], 'Interpreter','none');
+lgdH = legend(axC, lgd{:}, 'TextColor',[0.2 0.2 0.2], 'Color',[1 1 1], 'EdgeColor',[0.7 0.7 0.7], 'Interpreter','none');
+lgdH.FontSize = 13; lgdH.FontWeight = 'bold';
 title(axC, 'CA  (P2P ??','Color',[0.15 0.20 0.30]);
 xlabel(axC, '','Color',[0.3 0.35 0.42]); ylabel(axC, '??(log)','Color',[0.3 0.35 0.42]);
 drawnow;
@@ -124,5 +128,5 @@ catch ME
 end
 
 fprintf('\n\n');
-fprintf('??EPS / PNG / XLSX ?? %s\n', outDir);
-fprintf('?? %s\n', runTS);
+fprintf('EPS / PNG / XLSX written to %s\n', outDir);
+fprintf('run timestamp: %s\n', runTS);

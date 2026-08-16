@@ -1,15 +1,14 @@
-function traj = mu_build_tour_traj(ctrl, start, goal, waypts, n, nCtrl)
+function traj = mu_build_tour_traj(ctrl, start, goal, waypts, n)
 % mu_build_tour_traj : build a tour trajectory via piecewise Bezier / B-spline
 %   ctrl   : (2*nseg) x 3  [c1_s1;c2_s1; c1_s2;c2_s2; ...]
 %   start  : 1x3
 %   goal   : 1x3
 %   waypts : m x 3
 %   n      : samples per trajectory
-%   nCtrl  : control-point count hint
-% clamped Bezier a,c1,c2,b
+% (控制点数量由 ctrl 实际行数决定，不再需要 nCtrl 参数；R7/M1 冗余清理)
 if isempty(waypts)
     if size(ctrl,1) < 2, ctrl = [ctrl; ctrl(1,:)]; end
-    % B-spline via nCtrl
+    % B-spline（无途经点时退化为单段样条）
     traj = mu_bspline(ctrl, start, goal, n);
     return;
 end

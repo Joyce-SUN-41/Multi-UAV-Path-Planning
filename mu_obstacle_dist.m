@@ -37,7 +37,6 @@ for k=1:numel(obs)
         % 
         xs = cx + linspace(-bx, bx, nb(1));
         ys = cy + linspace(-by, by, nb(2));
-        cellx = (nb(1)>1) * (2*bx/(nb(1)-1)) : 0; % placeholder
         stepx = (nb(1)>1) * (2*bx/(nb(1)-1));
         stepy = (nb(2)>1) * (2*by/(nb(2)-1));
         bw = max(8, stepx - 2*o.gap) / 2;   % (x)
@@ -99,7 +98,8 @@ for k=1:numel(obs)
         cx = o.c(1); cy = o.c(2); zB = o.c(3);
         hw = o.hw; pod = o.pod; baseH = o.baseH; topH = o.baseH + o.bodyH;
         hwP = hw + pod;
-        hwT = hw * (1 - o.setback);
+        sb = 0.1; if isfield(o,'setback') && ~isempty(o.setback), sb = o.setback; end
+        hwT = hw * (1 - sb);
         cutFrac = 0.2; if isfield(o,'cutFrac') && ~isempty(o.cutFrac), cutFrac = o.cutFrac; end
         isL = isfield(o,'hasL') && o.hasL;
         if isL

@@ -29,11 +29,13 @@ for k = 1:size(depots, 1)
             o = obsSolid(oi);
             [do, ~] = mu_obstacle_dist(p, o, margin);
             if do < 0
-                % (nofly )
-                if strcmp(lower(o.type), 'nofly') && ~isempty(o.xz)
+                % support obstacles with or without a center field (bridge/row may not have o.c)
+                if isfield(o, 'c') && ~isempty(o.c)
+                    cx = o.c(1); cy = o.c(2);
+                elseif isfield(o, 'xz') && ~isempty(o.xz)
                     cx = mean(o.xz(:, 1)); cy = mean(o.xz(:, 2));
                 else
-                    cx = o.c(1); cy = o.c(2);
+                    continue;   % skip obstacles without a usable 2D center
                 end
                 vx = p(1) - cx; vy = p(2) - cy;
                 nv = sqrt(vx^2 + vy^2) + 1e-6;
@@ -60,10 +62,12 @@ for k = 1:size(depots, 1)
                 o = obsSolid(oi);
                 [do, ~] = mu_obstacle_dist(p, o, margin);
                 if do < 0
-                    if strcmp(lower(o.type), 'nofly') && ~isempty(o.xz)
+                    if isfield(o, 'c') && ~isempty(o.c)
+                        cx = o.c(1); cy = o.c(2);
+                    elseif isfield(o, 'xz') && ~isempty(o.xz)
                         cx = mean(o.xz(:, 1)); cy = mean(o.xz(:, 2));
                     else
-                        cx = o.c(1); cy = o.c(2);
+                        continue;
                     end
                     vx = p(1) - cx; vy = p(2) - cy;
                     nv = sqrt(vx^2 + vy^2) + 1e-6;

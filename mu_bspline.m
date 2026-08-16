@@ -36,36 +36,45 @@ P(end,:) = goal;
 end
 
 function y = bspline_curve(C, U, p, u)
-% ??C(Kx1) u(1xN)  B 
+% Cox-de Boor 基函数直接求和（B样条定义式，零歧义）：
+%   y(u) = sum_j N_{j,p}(u) * C(j)
+% N_{j,p}(u) 由 Cox-de Boor 递归定义（见 bspline_basis）。
 K = numel(C);
 y = zeros(size(u));
-uMax = U(end); uMin = U(1);
 for i = 1:numel(u)
     ui = u(i);
-    % M2clamped B ??u ??    % ??0 ??0  de Boor  u 
-    %  (uMin, uMax) ??clamped ??    %  mu_bspline  start/goal ??    if ui <= uMin, ui = uMin + 1e-9; end
-    if ui >= uMax, ui = uMax - 1e-9; end
-    % U(k) <= ui < U(k+1)k  [p+1, K]
-    k = find(U(1:end-1) <= ui + 1e-12, 1, 'last');
-    if isempty(k) || k < p+1, k = p+1; end
-    if k > K, k = K; end
-    %  k-p .. k
-    idx = (k-p) : k;
-    d = C(idx).';                    % (p+1) x 1
-    for r = 1:p
-        for j = 1:(p+1-r)
-            ii = idx(j);
-            denom = U(ii + p - r + 1) - U(ii);
-            if abs(denom) < 1e-12
-                alpha = 0;   %  alpha ??0
-            else
-                alpha = (ui - U(ii)) / denom;
-            end
-            d(j) = (1 - alpha) * d(j) + alpha * d(j+1);
-        end
+    N = zeros(K,1);
+    for j = 1:K
+        N(j) = bspline_basis(j, p, ui, U);
     end
-    y(i) = d(1);
+    y(i) = sum(N .* C(:));
 end
+end
+
+function N = bspline_basis(j, p, u, U)
+% N_{j,p}(u)，j 为 1-based 控制点索引（对应 U 索引 j..j+p+1）
+if j < 1 || j > numel(U) - p - 1
+    N = 0; return;
+end
+if p == 0
+    if u >= U(j) && u < U(j+1)
+        N = 1;
+    else
+        N = 0;
+    end
+    % 右端点 clamp：u == U(end) 时最高次基取 1
+    if abs(u - U(end)) < 1e-12 && j == numel(U) - p - 1
+        N = 1;
+    end
+    return;
+end
+left  = bspline_basis(j,   p-1, u, U);
+right = bspline_basis(j+1, p-1, u, U);
+N = 0;
+d1 = U(j+p)     - U(j);
+d2 = U(j+p+1)   - U(j+1);
+if d1 > 1e-12, N = N + (u - U(j))     / d1 * left;  end
+if d2 > 1e-12, N = N + (U(j+p+1) - u) / d2 * right; end
 end
 
 function k = augknt(breaks, p)

@@ -39,7 +39,27 @@ demo_muav
 MUAVPlanner
 ```
 
-运行 `demo_muav` 后，结果（EPS 矢量图与 XLSX 汇总）默认输出至 `results/` 子目录。
+运行 `demo_muav` / `run_muav` 后，输出默认写入 `results/` 子目录，包含三类产物：
+
+- **完整结果 `.mat`**（`muav_<tag>_<时间戳>.mat`）：自描述、可复现的规划结果，含 `scene`、每条 `trajs`、`bestX`（CA 最优决策变量，可重新解码轨迹）、`bestCost`、`curve`、`opt`、`metrics` 与 `meta`（`schemaVersion`/`savedAtUTC`/`savedAtLocal`/MATLAB 版本/字段清单等）。可经 `mu_load_result` 读回做轨迹回放与二次评估。
+- **实验集合 `.mat`**（`exp_<name>.mat`，可选）：同一实验名下多次运行追加进单个文件的 `runs` 字段，便于跨用例批量对比（如超参扫描）。
+- **可读索引** `results/index.json`：每次保存后自动追加一条记录（文件/标签/模式/代价），无需逐个 `load` 即可浏览全部结果。
+- **多视角图** `run_<tag>_<视角>_<时间戳>.png/.eps`（300dpi），由 `mu_export_views` 生成，覆盖看清路径所需的互补视角：
+  - `persp` 透视 3D 总体态势、`top` 正俯视（看清 XY 平面走向与绕障）、`sideX`/`sideY` 正侧视（看清高度分层与楼高关系）、`closeup` 近景放大（聚焦最复杂单机局部绕障）。
+  - `run_<tag>_convergence_<时间戳>.png/.eps`：CA 收敛曲线（P2P 用例）。
+- **汇总表** `run_muav_results_<时间戳>.xlsx`：各用例代价、穿透、长度等指标。
+
+读取示例：
+
+```matlab
+[res, meta] = mu_load_result('latest', 'results');          % 读最新一份单用例
+[paths, n]  = mu_load_result('list',   'results');          % 列出全部结果路径
+idx         = mu_load_result('index',  'results');          % 读取可读索引（JSON）
+runs        = mu_load_result('experiment', 'exp1', 'results'); % 读取实验集合
+```
+
+存储设计要点：保存时把 `terrainF` 等不可序列化的函数句柄替换为 `terrainFInfo` 并记录来源，读取端给出用 `mu_city_layout` 重建的提示；保存前校验 `trajs` 条数与 `scene.nUAV` 一致性；采用 `-v7.3` 格式（支持大数组与压缩），直接写最终文件名、零临时文件残留。
+
 
 ## 许可证
 

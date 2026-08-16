@@ -16,21 +16,23 @@ function city = mu_city_layout(difficulty, seed)
 % 阶段B：streetlight/sign 沿路网生成并参与碰撞；bridge 升级为可碰撞实体结构；
 %        materials 表补全（concrete/glass/metal/asphalt/water/vegetation/bridgedeck）。
 
-obs = struct('type',[],'c',[],'r',[],'half',[],'h',[],'grid',[],'gap',[], ...
-             'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
-             'hw',[],'pod',[],'baseH',[],'bodyH',[],'setback',[],'kind',[],'hue',[],'poly',[],'roof',[],'tier',[], ...
-             'materialId',[],'pole',[],'arm',[],'post',[],'panel',[],'deck',[],'pier',[]);
+obs = struct('type',{},'c',{},'r',{},'half',{},'h',{},'grid',{},'gap',{}, ...
+             'hmin',{},'hmax',{},'nbx',{},'nby',{},'ball',{},'xz',{},'zlo',{},'zhi',{},'f',{}, ...
+             'hw',{},'pod',{},'baseH',{},'bodyH',{},'setback',{},'kind',{},'hue',{},'poly',{},'roof',{},'tier',{}, ...
+             'materialId',{},'pole',{},'arm',{},'post',{},'panel',{},'deck',{},'pier',{});  % 0x1 struct array (no junk element)
 
 s = RandStream('mt19937ar','Seed', 100*seed + 7);
 
-% ===== 环境整体缩放因子 ENV_SCALE（2026-08-10 用户要求）=====
+% ===== 环境整体缩放因子 ENV_SCALE（2026-08-13 用户要求：X/Y 均为 ±500）=====
 % 目标：把"城市几何"整体放大，无人机本体尺寸（车辆/无人机半径、vehMargin、轨迹线宽）
 % 保持不变 —— 这样"楼间隙 / 安全壳 / 走廊"相对无人机显著变宽，无人机不易卡缝，
 % 优化问题（CAv9x 搜索可行域）难度随之下降。
 %   - half / bounds / 路宽 / 楼高 / 地形幅度 / footprint / 最小走廊 / 安全壳 / 桥宽 等均乘 S
 %   - terrFreq 除以 S（保持地形波长在世界尺度不变，仅幅度放大）
 %   - vehMargin / 车辆半径 / 轨迹线宽 不乘 S（无人机物理尺寸恒定）
-% 当前选 S=2.5：环境放大 2.5 倍，缝宽相对无人机显著变宽，CAv9x 搜索难度下降，无人机不易卡缝。
+% 当前选 S=2.5：城市几何 XY 半范围 = 200*2.5 = 500，恰好填满 mu_config 锁死的
+% [-500,500] 外框；缝宽相对无人机显著变宽，CAv9x 搜索难度下降，无人机不易卡缝；
+% 同时避免过度放大导致楼宇过高、飞行高度上限与空域尺度失配。
 % 注意：mu_config.m 中 ENV_SCALE 必须与此保持一致；修改缩放时两处须同步，或由统一常量管理。
 ENV_SCALE = 2.5;
 half = 200 * ENV_SCALE;   % 城市半范围（已含 ENV_SCALE，下游所有 half 引用自动放大）
@@ -49,11 +51,11 @@ if strcmpi(difficulty,'easy')      % 半岛新城：缓坡、低中层为主、�
     terrAmp = 10*ENV_SCALE; terrFreq = (1/90)/ENV_SCALE; nB = 6; water = 0;
     towers = 1; nofly = 1; trees = 40;
 elseif strcmpi(difficulty,'hard')  % 立体老城：陡坡深谷、超密高层簇、窄街
-    BCR = 0.55; arterialW = 34*ENV_SCALE; collectorW = 20*ENV_SCALE; localW = 8*ENV_SCALE;
+    BCR = 0.82; arterialW = 34*ENV_SCALE; collectorW = 20*ENV_SCALE; localW = 8*ENV_SCALE;
     tierRatio = [0.18 0.30 0.37 0.15];
     hL = [20 32]*ENV_SCALE; hM = [32 110]*ENV_SCALE; hH = [110 165]*ENV_SCALE; hT = [165 200]*ENV_SCALE;
-    terrAmp = 22*ENV_SCALE; terrFreq = (1/70)/ENV_SCALE; nB = 10; water = 1;
-    towers = 5; nofly = 3; trees = 75;
+    terrAmp = 22*ENV_SCALE; terrFreq = (1/70)/ENV_SCALE; nB = 12; water = 1;
+    towers = 8; nofly = 3; trees = 75;
 else                               % medium 坡地主城：中高混合、明显坡地
     BCR = 0.45; arterialW = 36*ENV_SCALE; collectorW = 22*ENV_SCALE; localW = 16*ENV_SCALE;
     tierRatio = [0.30 0.35 0.28 0.07];
@@ -63,13 +65,15 @@ else                               % medium 坡地主城：中高混合、明显
 end
 AVG_FOOT = 400 * ENV_SCALE^2;   % 单栋平均 footprint (m^2)，按 BCR 估算每地块目标栋数（面积随 S²）
 CORRIDOR = 6 * ENV_SCALE;       % 最小可飞走廊宽度 (m)，保证楼间隙 >= 此值（缝随环境放大）
-Z_CEIL = 180 * ENV_SCALE;       % 楼顶相对地形起算不超过此绝对高度（与 bounds z 上限一致，乘 S）
+Z_CEIL = 280;                   % 楼顶相对地形起算的绝对高度上限（<= mu_config 外框 Z 上限 300，留 20 余量）；
+                                     % 不再乘 ENV_SCALE（S=2.5 时 180*S=450 会顶破 300 外框）。
 % 道路红线缓冲：楼中心到道路中心线距离必须 >= 路半宽 + 此留白，否则拒绝放置
 %   （用户要求：有公路/立交的地方纵向不应有高楼，避免楼压路/穿模）。
 % arterial 主干 + 立交沿线留白大（两侧成片低层/留白带）；collector 是街区次干，
 %   两侧本就该有楼，故仅防楼中心压到路幅本身（留白很小），否则城市被路网切碎无楼可放。
-ROAD_SETBACK_ART = 16 * ENV_SCALE;   % 主干 + 立交主线沿线留白（形成清晰廊道，纵向无高楼）
-ROAD_SETBACK_COL = 8 * ENV_SCALE;    % 次干道两侧本就该有楼，仅防楼裙楼(podium)压到路幅，留白含典型半宽
+ROAD_SETBACK_ART = 8 * ENV_SCALE;    % 主干 + 立交主线沿线留白（形成清晰廊道，纵向无高楼；hard 适度收窄以密铺沿街楼）
+ROAD_SETBACK_COL = 3 * ENV_SCALE;    % 次干道两侧本就该有楼，仅靠 podium 半宽防压路幅，留白极小（hard 可密集沿街布楼）
+LOOP_SETBACK = 60 * ENV_SCALE;       % 盘桥(loop)旋转半径60S，留白同尺度让大楼彻底避开盘桥车行带
 
 % ---- 地形高度场（重庆式：谷地/台地/陡坎，保证全域 >=0 作为 L0 层次）----
 if strcmpi(difficulty,'hard')
@@ -178,13 +182,12 @@ function [cl, piers] = curvedRamp(pA, pB, zHi, zLo, bow, nSeg, S)
 end
 
 if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
+    approachLen = 70*ENV_SCALE;             % 引桥长度：从地面路缓坡升到高架
     if strcmpi(difficulty,'medium')
-        % ---- medium：单层跨线高架（沿 X）+ 4 条定向匝道（用户要求保持原状）----
+        % ---- medium：跨线高架（沿 X）+ 两端引桥落地 + 4 条定向匝道（真落地）----
         deckZ_main = zCross + 26*ENV_SCALE;
-        deckZ_ramp = zCross + 11*ENV_SCALE;
         p1m = [-ovHalf 0]; p2m = [ovHalf 0];
-        nPierM = 5;
-        piersM = zeros(nPierM,3);
+        nPierM = 5; piersM = zeros(nPierM,3);
         for pk=1:nPierM
             f = (pk-1)/(nPierM-1);
             px = (1-f)*p1m(1) + f*p2m(1); py = (1-f)*p1m(2) + f*p2m(2);
@@ -193,6 +196,20 @@ if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
         bid = bid + 1;
         bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1m;p2m], ...
             'width',arterialW,'deckZ',deckZ_main,'pillars',piersM,'kind','overpass');
+        % 两端引桥（多段斜坡，从地面路升到高架，墩接地形 -> 解决悬浮无斜坡）
+        for sgn=[-1 1]
+            a1 = [sgn*ovHalf 0]; a2 = [sgn*(ovHalf+approachLen) 0];
+            nA = 8; clA = zeros(nA+1,2); piersA = zeros(nA+1,3);
+            for k=0:nA
+                t = k/nA; x = (1-t)*a1(1)+t*a2(1); y = (1-t)*a1(2)+t*a2(2);
+                clA(k+1,:) = [x y]; piersA(k+1,:) = [x y terrainF(x,y)];
+            end
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',clA, ...
+                'width',arterialW,'deckZ',[deckZ_main terrainF(a2(1),a2(2))], ...
+                'pillars',piersA,'kind','approach');
+        end
+        % 4 条定向匝道：overpass 两端 -> 地面 Y 路两侧（弧线，真落地 zCross）
         rampLen = 55*ENV_SCALE;
         rampPairs = [ -ovHalf,+rampLen; -ovHalf,-rampLen; +ovHalf,+rampLen; +ovHalf,-rampLen ];
         for rk=1:4
@@ -206,12 +223,12 @@ if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
             end
             bid = bid + 1;
             bridges(end+1) = struct('id',bid,'class','bridge','centerline',[pA;pB], ...
-                'width',12*ENV_SCALE,'deckZ',deckZ_ramp,'pillars',piersR,'kind','ramp');
+                'width',12*ENV_SCALE,'deckZ',[deckZ_main zCross],'pillars',piersR,'kind','ramp'); % 真落地
         end
     else
-        % ---- hard：多层复式互通立交（定慧桥式）----
+        % ---- hard：双层复式互通立交（定慧桥式），全部桥加引桥落地、去重叠 ----
         %   双层主线：overpassX 高层 / overpassY 低层；8 条弧线定向匝道；
-        %   2 条层间螺旋连接；4 条 270° 盘桥(loop)。所有匝道/连接均为弧线。
+        %   2 条层间螺旋连接；4 条 270° 盘桥(loop)。所有匝道/连接均真落地 zCross。
         zHigh = zCross + 48*ENV_SCALE;
         zLow  = zCross + 24*ENV_SCALE;
         % 主线 overpassX（沿 X，高层）
@@ -225,6 +242,19 @@ if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
         bid = bid + 1;
         bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1x;p2x], ...
             'width',arterialW,'deckZ',zHigh,'pillars',piersX,'kind','overpass');
+        % overpassX 两端引桥落地
+        for sgn=[-1 1]
+            a1 = [sgn*ovHalf 0]; a2 = [sgn*(ovHalf+approachLen) 0];
+            nA = 8; clA = zeros(nA+1,2); piersA = zeros(nA+1,3);
+            for k=0:nA
+                t = k/nA; x = (1-t)*a1(1)+t*a2(1); y = (1-t)*a1(2)+t*a2(2);
+                clA(k+1,:) = [x y]; piersA(k+1,:) = [x y terrainF(x,y)];
+            end
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',clA, ...
+                'width',arterialW,'deckZ',[zHigh terrainF(a2(1),a2(2))], ...
+                'pillars',piersA,'kind','approach');
+        end
         % 主线 overpassY（沿 Y，低层）
         p1y = [0 -ovHalf]; p2y = [0 ovHalf];
         nPy = 5; piersY = zeros(nPy,3);
@@ -236,29 +266,42 @@ if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
         bid = bid + 1;
         bridges(end+1) = struct('id',bid,'class','bridge','centerline',[p1y;p2y], ...
             'width',arterialW,'deckZ',zLow,'pillars',piersY,'kind','overpass');
-        % 4 条弧线匝道：overpassX 两端 -> 地面 Y 路两侧
+        % overpassY 两端引桥落地
+        for sgn=[-1 1]
+            a1 = [0 sgn*ovHalf]; a2 = [0 sgn*(ovHalf+approachLen)];
+            nA = 8; clA = zeros(nA+1,2); piersA = zeros(nA+1,3);
+            for k=0:nA
+                t = k/nA; x = (1-t)*a1(1)+t*a2(1); y = (1-t)*a1(2)+t*a2(2);
+                clA(k+1,:) = [x y]; piersA(k+1,:) = [x y terrainF(x,y)];
+            end
+            bid = bid + 1;
+            bridges(end+1) = struct('id',bid,'class','bridge','centerline',clA, ...
+                'width',arterialW,'deckZ',[zLow terrainF(a2(1),a2(2))], ...
+                'pillars',piersA,'kind','approach');
+        end
+        % 4 条弧线匝道：overpassX 两端 -> 地面 Y 路两侧（落点偏移避开 overpassY 中心线，真落地）
         rampLen = 60*ENV_SCALE;
         rampPairsX = [ -ovHalf,+rampLen; -ovHalf,-rampLen; +ovHalf,+rampLen; +ovHalf,-rampLen ];
         for rk=1:4
             side = sign(rampPairsX(rk,2));
-            [clR, piersR] = curvedRamp([rampPairsX(rk,1) 0], [0 rampPairsX(rk,2)], ...
-                zHigh, zCross+6*ENV_SCALE, side*42*ENV_SCALE, 12, ENV_SCALE);
+            [clR, piersR] = curvedRamp([rampPairsX(rk,1) 0], [side*arterialW*0.9 rampPairsX(rk,2)], ...
+                zHigh, zCross, side*42*ENV_SCALE, 12, ENV_SCALE);
             bid = bid + 1;
             bridges(end+1) = struct('id',bid,'class','bridge','centerline',clR, ...
-                'width',12*ENV_SCALE,'deckZ',[zHigh zCross+6*ENV_SCALE],'pillars',piersR,'kind','ramp');
+                'width',12*ENV_SCALE,'deckZ',[zHigh zCross],'pillars',piersR,'kind','ramp');
         end
-        % 4 条弧线匝道：overpassY 两端 -> 地面 X 路两侧
+        % 4 条弧线匝道：overpassY 两端 -> 地面 X 路两侧（落点偏移避开 overpassX 中心线，真落地）
         rampPairsY = [ +rampLen,-ovHalf; -rampLen,-ovHalf; +rampLen,+ovHalf; -rampLen,+ovHalf ];
         for rk=1:4
-            side = sign(rampPairsY(rk,1));
-            [clR, piersR] = curvedRamp([0 rampPairsY(rk,2)], [rampPairsY(rk,1) 0], ...
-                zLow, zCross+6*ENV_SCALE, side*42*ENV_SCALE, 12, ENV_SCALE);
+            side = sign(rampPairsY(rk,2));
+            [clR, piersR] = curvedRamp([0 rampPairsY(rk,2)], [rampPairsY(rk,1) side*arterialW*0.9], ...
+                zLow, zCross, side*42*ENV_SCALE, 12, ENV_SCALE);
             bid = bid + 1;
             bridges(end+1) = struct('id',bid,'class','bridge','centerline',clR, ...
-                'width',12*ENV_SCALE,'deckZ',[zLow zCross+6*ENV_SCALE],'pillars',piersR,'kind','ramp');
+                'width',12*ENV_SCALE,'deckZ',[zLow zCross],'pillars',piersR,'kind','ramp');
         end
-        % 2 条层间螺旋连接：overpassX(高层) 弯下接入 overpassY(低层)
-        connPairs = [ -ovHalf,-ovHalf; +ovHalf,+ovHalf ];
+        % 2 条层间螺旋连接：overpassX(高层) 弯下接入 overpassY(低层)，避开盘桥象限
+        connPairs = [ -ovHalf*0.6,-ovHalf*0.6; +ovHalf*0.6,+ovHalf*0.6 ];
         for ck=1:2
             ax_ = connPairs(ck,1); ay_ = connPairs(ck,2);
             [clC, piersC] = curvedRamp([ax_ 0], [0 ay_], zHigh, zLow, ...
@@ -267,21 +310,29 @@ if ~strcmpi(difficulty,'easy')            % easy 仅平路，无高架/立交
             bridges(end+1) = struct('id',bid,'class','bridge','centerline',clC, ...
                 'width',10*ENV_SCALE,'deckZ',[zHigh zLow],'pillars',piersC,'kind','ramp');
         end
-        % 4 条 270° 盘桥(loop)：从高层螺旋下降回到低层，形成定慧桥式环岛
+        % 4 条盘桥(loop)：从 overpassX 端点(高层 zHigh) 起桥，270° 螺旋下降落地到
+        %   角点附近地面(zCross)，旋转中心外移避开主线，首尾连通（修复悬空/重叠）。
         R_loop = 60*ENV_SCALE; loopSeg = 28;
-        loopStart = zHigh; loopEnd = zLow;
+        loopEnd = zCross;
         for q=1:4
-            ang0 = (q-1)*pi/2 + pi/4;
-            cxq = cos(ang0)*ovHalf*0.55; cyq = sin(ang0)*ovHalf*0.55;
+            % 每个盘桥从对应 overpassX 端点 [-ovHalf,0] / [+ovHalf,0] 接入
+            sideX = (mod(q-1,2)*2 - 1);          % -1, +1, -1, +1
+            sideY = (floor((q-1)/2)*2 - 1);      % -1, -1, +1, +1
+            ax_ = sideX * ovHalf; ay_ = sideY * ovHalf * 0.55;
+            cxq = sideX * ovHalf * 0.9; cyq = sideY * ovHalf * 0.9;  % 旋转中心外移，避开 overpassX 端点
             pts = zeros(loopSeg+1,2); piersL = zeros(loopSeg+1,3);
             for k=0:loopSeg
-                th = ang0 + k/loopSeg*1.5*pi;          % 270° 螺旋
-                x = cxq + R_loop*cos(th); y = cyq + R_loop*sin(th);
+                if k == 0
+                    x = ax_; y = 0;                               % 首端 = overpassX 端点（连通主线）
+                else
+                    th = atan2(0 - cyq, ax_ - cxq) + k/loopSeg*1.5*pi;  % 从接入点起 270° 螺旋
+                    x = cxq + R_loop*cos(th); y = cyq + R_loop*sin(th);
+                end
                 pts(k+1,:) = [x y]; piersL(k+1,:) = [x y terrainF(x,y)];
             end
             bid = bid + 1;
             bridges(end+1) = struct('id',bid,'class','bridge','centerline',pts, ...
-                'width',11*ENV_SCALE,'deckZ',[loopStart loopEnd],'pillars',piersL,'kind','loop');
+                'width',11*ENV_SCALE,'deckZ',[zHigh loopEnd],'pillars',piersL,'kind','loop');
         end
     end
 end
@@ -299,9 +350,9 @@ cumT = cumsum(tierRatio);
 for bi=1:size(blocks,1)
     bxc = blocks(bi,1); byc = blocks(bi,2); bw = blocks(bi,3); bh = blocks(bi,4);
     blockArea = bw*bh;
-    nTarget = min(6, max(1, floor(blockArea*BCR/AVG_FOOT)));   % 每地块目标栋数（cap 防过载）
+    nTarget = min(9, max(1, floor(blockArea*BCR/AVG_FOOT)));   % 每地块目标栋数（cap 防过载；hard 已加密）
     placedInBlock = 0; attempts = 0;
-    while placedInBlock < nTarget && attempts < nTarget*40
+    while placedInBlock < nTarget && attempts < nTarget*200
         attempts = attempts + 1;
         % 地块内均匀抖动采样（留边给街道），保证密集但成片
         cx = bxc + (rand(s,1)*2-1)*bw*0.42;
@@ -317,7 +368,6 @@ for bi=1:size(blocks,1)
         else
             tier='T'; topH = hT(1) + rand(s,1)*(hT(2)-hT(1)); kind='landmark';
         end
-        b = mu_make_bldg(cx, cy, topH, kind, s, ENV_SCALE);
         % 楼层基底贴合地形（zGround），解决"楼悬空/埋地"暗伤：
         %   c(3) 改为实际地面标高，碰撞/渲染均以此为零基准起建。
         zG = terrainF(cx, cy);
@@ -353,10 +403,16 @@ for bi=1:size(blocks,1)
         if okPlace
             for bi2=1:numel(bridges)
                 br2 = bridges(bi2);
-                dR = mu_pt_seg_dist(cx, cy, br2.centerline(1,:), br2.centerline(2,:));
+                % 到桥中心线整条折线的最近距离（不只是首段，盘桥/匝道等多段折线必须遍历）
+                cl2 = br2.centerline;
+                dR = Inf;
+                for sj=1:size(cl2,1)-1
+                    dR = min(dR, mu_pt_seg_dist(cx, cy, cl2(sj,:), cl2(sj+1,:)));
+                end
                 % overpass（主线高架）用 arterial 级大留白形成清晰廊道；
                 % ramp（匝道）较窄，留白减小以免把城市切块（匝道沿线仍纵向无高楼）。
                 sbB = ROAD_SETBACK_ART; if strcmpi(br2.kind,'ramp'), sbB = 12*ENV_SCALE; end
+                if strcmpi(br2.kind,'loop'), sbB = LOOP_SETBACK; end   % 盘桥旋转清扫圈大，留白加大
                 if dR < br2.width/2 + sbB
                     okPlace = false; break;
                 end
@@ -413,8 +469,14 @@ for ti=1:towers
     if okPlace
         for bi2=1:numel(bridges)
             br2 = bridges(bi2);
-            dR = mu_pt_seg_dist(cx, cy, br2.centerline(1,:), br2.centerline(2,:));
+            % 到桥中心线整条折线的最近距离（不只是首段，盘桥/匝道等多段折线必须遍历）
+            cl2 = br2.centerline;
+            dR = Inf;
+            for sj=1:size(cl2,1)-1
+                dR = min(dR, mu_pt_seg_dist(cx, cy, cl2(sj,:), cl2(sj+1,:)));
+            end
             sbB = ROAD_SETBACK_ART; if strcmpi(br2.kind,'ramp'), sbB = 12*ENV_SCALE; end
+            if strcmpi(br2.kind,'loop'), sbB = LOOP_SETBACK; end   % 盘桥旋转清扫圈大，留白加大
             if dR < br2.width/2 + sbB
                 okPlace = false; break;
             end
@@ -456,10 +518,39 @@ for nf=1:nofly
 end
 
 % ---- 低矮植被（tree，软障碍，公园/街道绿化）----
+% 树高与环境尺度一致（乘 ENV_SCALE）+ 整体增大约 40%（30%~50% 区间），
+% 使树不再像草、呈现高大挺拔；树冠半径同步放大，保持树干/树冠比例协调。
+TREE_GAIN = 1.4;
+% 桥及两侧公路沿线不留树木：树候选点须避开桥 centerline 与路 centerline 缓冲区，
+% 避免树/路灯与桥面或路面重叠造成视觉穿模（立交/跨线高架沿线尤其明显）。
+% 公路仅禁路面带本身（路半宽 + 树冠半径 + 小裕度），两侧仍可有街道绿化树；
+% 桥为实体结构（含桥墩），需更大空当以免树冠穿桥。
+BRIDGE_CLEAR = 16*ENV_SCALE;   % 桥中心线两侧空出（含桥宽 + 树冠半径 + 裕度）
 for tr=1:trees
-    cx = -half+2*half*rand(s,1); cy = -half+2*half*rand(s,1); th = 6+8*rand(s,1);
+    placed = false;
+    for attempt=1:80
+        cx = -half+2*half*rand(s,1); cy = -half+2*half*rand(s,1);
+        trR = (3+2*rand(s,1)) * ENV_SCALE * TREE_GAIN;  % 树冠半径（先取，用于动态路缓冲）
+        okTree = true;
+        for bi2=1:numel(bridges)
+            br2 = bridges(bi2);
+            dR = mu_pt_seg_dist(cx, cy, br2.centerline(1,:), br2.centerline(end,:));
+            if dR < br2.width/2 + BRIDGE_CLEAR, okTree = false; break; end
+        end
+        if okTree
+            for ri2=1:numel(roads)
+                r2 = roads(ri2);
+                dR = mu_pt_seg_dist(cx, cy, r2.centerline(1,:), r2.centerline(2,:));
+                if dR < r2.width/2 + trR + 3*ENV_SCALE, okTree = false; break; end
+            end
+        end
+        if ~okTree, continue; end
+        placed = true; break;
+    end
+    if ~placed, continue; end   % 实在避不开就跳过该树（总数略减，避免穿模）
+    th = (6+8*rand(s,1)) * ENV_SCALE * TREE_GAIN;   % 树整体增高（约 21~49m，mean~35m）
     zG = terrainF(cx, cy);                       % 树根贴合地形曲面（修复"树没在曲面上"）
-    obs(end+1) = struct('type','tree','c',[cx cy zG],'r',(3+2*rand(s,1))*ENV_SCALE,'half',[],'h',th,'grid',[],'gap',[], ...
+    obs(end+1) = struct('type','tree','c',[cx cy zG],'r',trR,'half',[],'h',th,'grid',[],'gap',[], ...
         'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
         'hw',[],'pod',[],'baseH',[],'bodyH',[],'setback',[],'kind',[],'hue',[],'poly',[],'roof',[],'tier',[], ...
         'materialId','vegetation','pole',[],'arm',[],'post',[],'panel',[],'deck',[],'pier',[]);
@@ -481,17 +572,35 @@ LAMP_STEP = 34*ENV_SCALE;       % 路灯间距 (m)（随环境放大）
 LAMP_H = 12*ENV_SCALE;          % 灯杆高 (m)
 LAMP_R = 0.8*ENV_SCALE;         % 灯杆半径 (m)
 ARM_LEN = 2.2*ENV_SCALE;        % 灯臂悬挑 (m)
+BRIDGE_CLEAR_L = 14*ENV_SCALE;  % 路灯避开桥中心线（含桥宽 + 杆半径 + 裕度）
 for gi=1:nB
     off = bxl(gi);
     % 平行于 Y 的纵向 collector（x=off）
     for yy = -half+LAMP_STEP : LAMP_STEP : half-LAMP_STEP
         comp = off + collectorW/2 - 2;        % 路缘靠建筑侧
+        % 跳过落在桥区（立交/跨线高架）的路灯，避免灯杆与桥面/桥墩穿模
+        skipL = false;
+        for bi2=1:numel(bridges)
+            br2 = bridges(bi2);
+            if mu_pt_seg_dist(comp, yy, br2.centerline(1,:), br2.centerline(end,:)) < br2.width/2 + BRIDGE_CLEAR_L
+                skipL = true; break;
+            end
+        end
+        if skipL, continue; end
         cc = [comp yy terrainF(comp, yy)];     % 灯杆底心贴合地形
         obs(end+1) = make_streetlight(cc, LAMP_H, LAMP_R, ARM_LEN, [1 0 0], s);
     end
     % 平行于 X 的横向 collector（y=off）
     for xx = -half+LAMP_STEP : LAMP_STEP : half-LAMP_STEP
         comp = off + collectorW/2 - 2;
+        skipL = false;
+        for bi2=1:numel(bridges)
+            br2 = bridges(bi2);
+            if mu_pt_seg_dist(xx, comp, br2.centerline(1,:), br2.centerline(end,:)) < br2.width/2 + BRIDGE_CLEAR_L
+                skipL = true; break;
+            end
+        end
+        if skipL, continue; end
         cc = [xx comp terrainF(xx, comp)];     % 灯杆底心贴合地形
         obs(end+1) = make_streetlight(cc, LAMP_H, LAMP_R, ARM_LEN, [0 1 0], s);
     end
@@ -508,10 +617,10 @@ for sg=1:nSign
 end
 
 % ---- 空域分层参数（L3：低空街道峡谷带 / 中层可飞带 / 高空走廊）----
-% Z 边界随 ENV_SCALE 放大（与 Z_CEIL / bounds(6) 一致）
-airspace = struct('low', struct('zlo',0,'zhi',70*ENV_SCALE), ...
-                  'mid', struct('zlo',70*ENV_SCALE,'zhi',130*ENV_SCALE), ...
-                  'high',struct('zlo',130*ENV_SCALE,'zhi',180*ENV_SCALE));
+% 固定在锁死外框 Z 范围 [-50, 300] 内（仅用于客户点分色与巡航层语义，不影响物理边界）。
+airspace = struct('low', struct('zlo',-50,'zhi',70), ...
+                  'mid', struct('zlo',70,'zhi',180), ...
+                  'high',struct('zlo',180,'zhi',300));
 
 % ---- 材质查找表（阶段B 补全：介电常数/反射率/RGB）----
 materials = struct();
@@ -550,10 +659,10 @@ if strcmpi(difficulty,'easy')
         'sunAz',135,'sunEl',72,'skyTint',[1 1 1]);
 elseif strcmpi(difficulty,'medium')
     envdyn = struct('timeOfDay',16.0,'weather','cloudy', ...
-        'sunAz',255,'sunEl',35,'skyTint',[0.93 0.94 0.96]);
+        'sunAz',255,'sunEl',35,'skyTint',[1 1 1]);
 else
-    envdyn = struct('timeOfDay',18.0,'weather','fog', ...
-        'sunAz',282,'sunEl',12,'skyTint',[0.82 0.83 0.85]);
+    envdyn = struct('timeOfDay',16.0,'weather','fog', ...
+        'sunAz',282,'sunEl',12,'skyTint',[1 1 1]);
 end
 
 dynamics = make_dynamics(roads, junctions, terrainF, difficulty, s);
@@ -834,19 +943,28 @@ function o = make_bridge_collision(br, ENV_SCALE)
 %   每段一个 deck box + 该段两端桥墩，deckZ 沿段线性插值。
 cl = br.centerline; n = size(cl,1);
 if n == 2
-    % ---- 单段直线桥（overpass / medium 原逻辑）----
+    % ---- 单段直线桥（overpass / medium 原逻辑），deckZ 可为标量或 [首端 尾端] 向量 ----
     p1 = cl(1,:); p2 = cl(2,:);
     deckZ = br.deckZ;
+    if isscalar(deckZ)
+        zc = deckZ; zh = 1.6*ENV_SCALE;
+        zPier = deckZ;
+    else
+        zc = (deckZ(1)+deckZ(end))/2;
+        zh = (max(deckZ)-min(deckZ))/2 + 1.6*ENV_SCALE;
+        zPier = deckZ;
+    end
     dirv = (p2 - p1)/norm(p2 - p1);
     perp = [-dirv(2) dirv(1)];
     R = [dirv(1) dirv(2) 0; perp(1) perp(2) 0; 0 0 1];
-    deckHW = [norm(p2-p1)/2, br.width/2, 1.6*ENV_SCALE];
-    deckC = [ (p1(1)+p2(1))/2 (p1(2)+p2(2))/2 deckZ ];
+    deckHW = [norm(p2-p1)/2, br.width/2, zh];
+    deckC = [ (p1(1)+p2(1))/2 (p1(2)+p2(2))/2 zc ];
     pcols = br.pillars;
     piers = struct('c',[],'r',[],'z1',[]);
     for pk=1:size(pcols,1)
         pp = pcols(pk,:);
-        piers(pk) = struct('c',[pp(1) pp(2) 0],'r',2.5*ENV_SCALE,'z1',deckZ);
+        zk = zPier(min(pk, numel(zPier)));
+        piers(pk) = struct('c',[pp(1) pp(2) 0],'r',4*ENV_SCALE,'z1',zk);
     end
     o = struct('type','bridge','c',deckC,'r',[],'half',[],'h',[],'grid',[],'gap',[], ...
         'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
@@ -869,8 +987,8 @@ else
         deckC = [ (p1(1)+p2(1))/2 (p1(2)+p2(2))/2 zSeg ];
         % 该段两端桥墩（接地形）
         piers = struct('c',[],'r',[],'z1',[]);
-        piers(1) = struct('c',[p1(1) p1(2) 0],'r',2.5*ENV_SCALE,'z1',zSeg);
-        piers(2) = struct('c',[p2(1) p2(2) 0],'r',2.5*ENV_SCALE,'z1',zSeg);
+        piers(1) = struct('c',[p1(1) p1(2) 0],'r',4*ENV_SCALE,'z1',zSeg);
+        piers(2) = struct('c',[p2(1) p2(2) 0],'r',4*ENV_SCALE,'z1',zSeg);
         tmp{end+1} = struct('type','bridge','c',deckC,'r',[],'half',[],'h',[],'grid',[],'gap',[], ...
             'hmin',[],'hmax',[],'nbx',[],'nby',[],'ball',[],'xz',[],'zlo',[],'zhi',[],'f',[], ...
             'hw',[],'pod',[],'baseH',[],'bodyH',[],'setback',[],'kind',[],'hue',[],'poly',[],'roof',[],'tier',[], ...

@@ -24,10 +24,12 @@ BUILDING  = [0.55 0.62 0.72];   % cool grey-blue
 BUILD_EDG = [0.35 0.43 0.55];
 HAZARD    = [0.88 0.42 0.30];   % warm accent (no-fly)
 HAZARD_ED = [0.72 0.25 0.18];
-UAV_COLORS = [0.10 0.45 0.75; 0.85 0.45 0.10; 0.20 0.60 0.35; ...
-              0.65 0.20 0.55; 0.15 0.55 0.60; 0.80 0.65 0.10];
+UAV_COLORS = [0.90 0.10 0.10; 0.00 0.20 0.90; 0.00 0.70 0.20; 0.85 0.00 0.70; ...
+              1.00 0.50 0.00; 0.00 0.70 0.80; 0.50 0.00 0.90; 0.95 0.85 0.00];
 
 b = scene.bounds;
+terrainF = [];
+if isfield(scene,'terrainF'), terrainF = scene.terrainF; end
 ax.XLim = [b(1) b(2)]; ax.YLim = [b(3) b(4)]; ax.ZLim = [b(5) b(6)];
 
 % ---------- background and grid ----------
@@ -120,12 +122,19 @@ end
 
 % ---------- tour customer points ----------
 if strcmpi(mode,'tour') && isfield(scene,'tasks') && ~isempty(scene.tasks)
+    % 颜色阈值随空域尺度缩放，保证低/中/高分层语义在不同 ENV_SCALE 下一致
+    if isfield(scene,'airspace') && isfield(scene.airspace,'low') && isfield(scene.airspace,'mid')
+        zLow = scene.airspace.low.zhi;
+        zMid = scene.airspace.mid.zhi;
+    else
+        zLow = 45; zMid = 90;
+    end
     for i=1:size(scene.tasks,1)
         p = scene.tasks(i,:);
         % 按高度分色：低=蓝 中=橙 高=红
-        if p(3) < 45
+        if p(3) < zLow
             cc = [0.20 0.45 0.75];
-        elseif p(3) < 90
+        elseif p(3) < zMid
             cc = [0.95 0.65 0.10];
         else
             cc = [0.85 0.30 0.30];
@@ -139,12 +148,44 @@ if strcmpi(mode,'tour') && isfield(scene,'tasks') && ~isempty(scene.tasks)
 end
 
 % ---------- trajectories (gradient ribbons, dark-core for white bg) ----------
+% 多机场景下轨迹易在 dense 城区重叠成"意大利面"，给每架 UAV 一个微小的 z 阶梯偏移
+%（不改变物理轨迹，仅供显示），提升可辨识性。
+trajH = [];   % 收集轨迹线句柄，供图例精确引用（避免误纳建筑/地形等）
 for k=1:scene.nUAV
     if k > size(trajs,1), break; end
     T = trajs{k};
     if isempty(T), continue; end
     col = UAV_COLORS(mod(k-1,size(UAV_COLORS,1))+1,:);
-    mu_traj_gradient(ax, T, col, struct('width',1.5,'fade',0.12,'whitebg',true,'arrow',true,'refine',2));
+    Tvis = T;
+    if scene.nUAV > 1
+        Tvis(:,3) = Tvis(:,3) + (k-1) * 0.6;   % 每机递增 0.6m 显示偏移
+    end
+    % 简单实线轨迹（清晰、无渐变/光晕/分段）：直接 plot3 单段实线
+    h = plot3(ax, Tvis(:,1), Tvis(:,2), Tvis(:,3), ...
+        'Color',col, 'LineWidth',2.2, 'LineStyle','-');
+    trajH = [trajH; h];
+end
+
+% ---------- tour task-to-ground垂线（帮助识别每机任务归属） ----------
+if strcmpi(mode,'tour') && isfield(scene,'tasks') && ~isempty(scene.tasks) && scene.nUAV > 0
+    if isfield(scene,'taskAssign') && ~isempty(scene.taskAssign)
+        taskUAV = zeros(size(scene.tasks,1),1);
+        for ku=1:numel(scene.taskAssign)
+            taskUAV(scene.taskAssign{ku}) = ku;
+        end
+        for ti=1:size(scene.tasks,1)
+            ku = taskUAV(ti);
+            if ku == 0, continue; end
+            p = scene.tasks(ti,:);
+            zG = 0;
+            if ~isempty(terrainF)
+                zG = terrainF(p(1), p(2));
+            end
+            col = UAV_COLORS(mod(ku-1,size(UAV_COLORS,1))+1,:);
+            plot3(ax, [p(1) p(1)], [p(2) p(2)], [zG p(3)], ...
+                'Color',[col 0.55],'LineWidth',1.0,'LineStyle','-');
+        end
+    end
 end
 
 % ---------- start / goal markers ----------
@@ -158,20 +199,9 @@ end
 if isfield(scene,'envdyn') && ~isempty(scene.envdyn)
     env = scene.envdyn;
     skyTint = env.skyTint;
-    % 天空盒近似：背景色随天气/时段微调（白底基础上叠色温）
-    if strcmpi(env.weather,'clear')
-        bgCol = skyTint;                       % 晴昼：纯白
-    elseif strcmpi(env.weather,'cloudy')
-        bgCol = skyTint * 0.97;                % 多云：略灰
-    elseif strcmpi(env.weather,'fog')
-        bgCol = skyTint * 0.90;                % 雾：灰白，远处融入背景
-    elseif strcmpi(env.weather,'rain')
-        bgCol = [0.80 0.82 0.85];
-    elseif strcmpi(env.weather,'snow')
-        bgCol = [0.90 0.92 0.95];
-    else
-        bgCol = [1 1 1];
-    end
+    % 三个场景背景统一为纯白（如 easy/clear）：多云/雾仅影响雾效浓度，
+    % 不再对背景色做灰色偏移，使 medium/hard 与 easy 一致为纯白底。
+    bgCol = skyTint;
     if ~isGUI
         fig = ancestor(ax,'figure');
         if ~isempty(fig), fig.Color = bgCol; end
@@ -220,7 +250,33 @@ end
 
 xlabel(ax,'X'); ylabel(ax,'Y'); zlabel(ax,'Z');
 view(ax, [38 26]);
-axis(ax,'equal');
+% 锁定画布尺寸：XY 严格裁切到外框 [-500,500]，Z 固定 [-50,400]；
+% 非 GUI 强制 axis square，使窗口呈正方形、四周留白不变形；GUI(UIAxes) 保留 equal 填满面板。
+if ~isGUI
+    b = scene.bounds;
+    ax.XLim = [b(1) b(2)]; ax.YLim = [b(3) b(4)];
+    ax.ZLim = [-50 400];
+    axis(ax,'square');
+else
+    axis(ax,'equal');
+end
+
+% ---------- UAV 轨迹图例（统一放底部、两行：规范化加粗放大、清晰可读）----------
+if ~isempty(trajH) && ~isGUI
+    lg = legend(ax, trajH, arrayfun(@(k)sprintf('UAV-%d',k),1:numel(trajH),'UniformOutput',false));
+    if ~isempty(lg)
+        lg.FontSize = 13;
+        lg.FontWeight = 'bold';
+        lg.TextColor = [0.15 0.20 0.30];
+        lg.Color = [1 1 1];
+        lg.EdgeColor = [0.7 0.7 0.7];
+        lg.Location = 'southoutside';        % 统一放底部（坐标轴下方外侧）
+        lg.Orientation = 'horizontal';
+        lg.NumColumns = ceil(numel(trajH)/2); % 分两行排布
+        lg.Interpreter = 'none';
+        lg.Box = 'on';
+    end
+end
 drawnow;
 end
 
@@ -288,7 +344,8 @@ hold(ax,'on');
 cx=o.c(1); cy=o.c(2); zB=o.c(3);  % zB=楼层基底（贴合地形，与碰撞一致）
 hw=o.hw; pod=o.pod; baseH=o.baseH; bH=o.bodyH; topH=baseH+bH;
 hwP=hw+pod;                       % 裙楼半宽（比塔身更宽）
-hwT=hw*(1-o.setback);             % 塔身退台收进
+sb = 0.1; if isfield(o,'setback') && ~isempty(o.setback), sb = o.setback; end
+hwT=hw*(1-sb);                      % 塔身退台收进（守卫空 setback，与 mu_obstacle_dist 一致）
 % ---- 颜色按类型（强化四色差异，贴近真实城市建材）----
 switch lower(o.kind)
     case 'residential', baseCol=[0.66 0.62 0.55];   % 暖灰（住宅混凝土/暖石材）
@@ -299,7 +356,8 @@ switch lower(o.kind)
 end
 % 高度亮度衰减：以 150m 为参考，越高实体越浅（玻璃反光/大气透视）
 hAtt = topH / 150;
-baseCol = min(1, baseCol + 0.10*hAtt + o.hue);   % 高度衰减 + 明度抖动
+hue = 0; if isfield(o,'hue') && ~isempty(o.hue), hue = o.hue; end
+baseCol = min(1, baseCol + 0.10*hAtt + hue);   % 高度衰减 + 明度抖动（守卫空 hue）
 % 层次性（L1）：按 tier 给竖向四带轻微色相偏移，强化"成片低层 + 簇拥高层"可读性
 if isfield(o,'tier')
     switch o.tier
@@ -500,7 +558,8 @@ end
 function drawRoads(ax, roads, terrainF, overHalf)
 % 地面公路网：把 scene.roads 渲染为贴地灰色道路带（arterial 宽亮、collector 窄），
 % 作为明确的"地面层"，让地面呈现路网而非纯地形伪彩。道路沿 centerline 生成矩形带，
-% 高度取 z_profile（随地形）。高架桥（L2）由 drawBridge 单独绘制，本函数只画地面道路。
+% 高度沿中心线插值 terrainF / z_profile，保证长坡路段真实贴地。
+% 高架桥（L2）由 drawBridge 单独绘制，本函数只画地面道路。
 % overHalf（可选）：X 向 arterial 在 |x|<=overHalf 立交高架覆盖区省略地面带，
 %   避免地面带与跨线高架投影重叠，使"高架跨地面"的立交层次清晰可辨。
 hold(ax,'on');
@@ -524,12 +583,20 @@ for ri=1:nR
         if abs(xB-xA) < 1e-3, continue; end
         a = [xA p1(2)]; b = [xB p2(2)];
         dir = (b-a)/norm(b-a); perp = [-dir(2) dir(1)];
+        % 沿中心线多段采样取地形高度，避免长坡路用单点均值而浮于/陷入地形
+        nSeg = max(2, ceil(norm(b-a)/20));
+        tSeg = linspace(0,1,nSeg);
+        midZ = 0;
         if ~isempty(terrainF)
-            zc = terrainF(mean([a(1) b(1)]), mean([a(2) b(2)]));
+            for si=1:nSeg
+                cseg = a + (b-a)*tSeg(si);
+                midZ = midZ + terrainF(cseg(1), cseg(2));
+            end
+            midZ = midZ / nSeg;
         else
-            zc = 0;
+            midZ = 0;
         end
-        zc = zc + 0.4;
+        zc = midZ + 0.4;
         hw = w/2;
         V = [a+perp*hw, zc; b+perp*hw, zc; b-perp*hw, zc; a-perp*hw, zc];
         if strcmpi(r.class,'arterial')
@@ -597,41 +664,48 @@ scatter3(ax, p(1),p(2),p(3), 45, c, 'filled', ...
 end
 
 function drawBridge(ax, o, edgeC)
-% 跨江/跨谷大桥（L2 立体交通层）：路面板（薄 box，沿 p1->p2）+ 两侧栏杆 + 桥墩
+% 跨江/跨谷大桥（L2 立体交通层）：路面板（连续桥面带）+ 两侧栏杆 + 桥墩
 % 桥身用偏暖色（混凝土灰+浅橙面层），与冷蓝色建筑形成色彩对比，使桥在密集城区
 % 里"跳出来"，呈现立体交通的视觉层次。
-% 支持多段折线桥（弧线匝道/盘桥）：centerline 为 Nx2 (N>=2)，逐段绘制。
+% 直线桥（n=2）用单段 box；多段桥（弧线匝道/盘桥/立交）沿弧长重采样为连续曲面，
+% 视觉上完全丝滑（碰撞仍用 make_bridge_collision 的逐段 box，保持判定一致）。
 hold(ax,'on');
 cl = o.centerline; n = size(cl,1);
 w = o.width/2;
 dZ = o.deckZ;
 if isscalar(dZ), zA = dZ; zB = dZ; else zA = dZ(1); zB = dZ(end); end
-% 桥墩（pillars 每行 = [x y baseZ]，柱从地形基底到桥面，用粗线+半透明矩形 box）
+% 桥墩（pillars 每行 = [x y baseZ]，柱从地形基底到桥面，用粗线+半透明矩形 box）。
+% 墩顶高度按该节点处的实际 deckZ（对盘桥/匝道/立交曲线段，deckZ 沿桥长变化，
+% 不再固定取起始高度，从而与桥面贴合，消除桥墩与弯曲桥面错位）。
 for pi=1:size(o.pillars,1)
     pc = o.pillars(pi,:);
-    zTop = zA; % 墩顶取桥起始高度（近似，盘桥/匝道墩顶随段变化由逐段补充）
-    Vp = [pc(1)-2 pc(2)-2 pc(3); pc(1)+2 pc(2)-2 pc(3); ...
-          pc(1)+2 pc(2)+2 pc(3); pc(1)-2 pc(2)+2 pc(3); ...
-          pc(1)-2 pc(2)-2 zTop; pc(1)+2 pc(2)-2 zTop; ...
-          pc(1)+2 pc(2)+2 zTop; pc(1)-2 pc(2)+2 zTop];
+    if n == 2
+        zTop = zA;                            % 直线桥：两端高度
+    else
+        zTop = zA + (zB - zA) * ((pi-1)/(n-1)); % 折线桥：节点处沿桥长插值的真实桥面高度
+    end
+    zTop = max(zTop, pc(3) + 1);              % 防止墩顶低于基底
+    Vp = [pc(1)-3.2 pc(2)-3.2 pc(3); pc(1)+3.2 pc(2)-3.2 pc(3); ...
+          pc(1)+3.2 pc(2)+3.2 pc(3); pc(1)-3.2 pc(2)+3.2 pc(3); ...
+          pc(1)-3.2 pc(2)-3.2 zTop; pc(1)+3.2 pc(2)-3.2 zTop; ...
+          pc(1)+3.2 pc(2)+3.2 zTop; pc(1)-3.2 pc(2)+3.2 zTop];
     facesP = [5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
     patch(ax,'Vertices',Vp,'Faces',facesP,'FaceColor',[0.70 0.66 0.60], ...
         'EdgeColor',edgeC,'EdgeAlpha',0.35,'LineWidth',0.4,'FaceLighting','none');
 end
-% 逐段绘制路面板 + 栏杆 + 标线
-for i=1:n-1
-    p1 = cl(i,:); p2 = cl(i+1,:);
-    tmid = (i-0.5)/(n-1);
-    deckZ = zA + (zB - zA)*tmid;       % 沿桥长插值 deckZ
-    dir = (p2-p1)/norm(p2-p1); perp = [-dir(2) dir(1)];
-    c1 = p1 + dir*w; c2 = p2 - dir*w;
-    z0 = deckZ; z1 = deckZ + 2;
-    cc = (c1+c2)/2;
-    Lh = norm(c2-c1)/2;
-    Vloc = [-Lh -w z0; Lh -w z0; Lh w z0; -Lh w z0; -Lh -w z1; Lh -w z1; Lh w z1; -Lh w z1];
+% ---- 桥面：连续曲面（视觉丝滑）----
+% 统一沿弧长重采样 centerline 为密集点（每 ~3m 一个点，最少 40 段），
+% 桥面高度沿弧长线性插值（用原始节点 deckZ），法向由局部切线得到，
+% 生成左/右缘点列后用 surf 连成无缝桥面带；标线=重采样中心线，栏杆=左右缘。
+if n == 2
+    % 直线桥：直接用端点，单段 box 即可（已平滑）
+    c1 = cl(1,:); c2 = cl(2,:);
+    cc = (c1+c2)/2; Lh = norm(c2-c1)/2;
+    dir = (c2-c1)/norm(c2-c1); perp = [-dir(2) dir(1)];
+    za = zA; zb = zB;
+    Vloc = [-Lh -w za; Lh -w zb; Lh w zb; -Lh w za; -Lh -w za+2; Lh -w zb+2; Lh w zb+2; -Lh w za+2];
     R = [dir(1) dir(2) 0; perp(1) perp(2) 0; 0 0 1];
-    V = (R * Vloc.').';   % 转世界坐标
-    V(:,1) = V(:,1) + cc(1); V(:,2) = V(:,2) + cc(2);
+    V = (R * Vloc.').'; V(:,1)=V(:,1)+cc(1); V(:,2)=V(:,2)+cc(2);
     faces = [5 6 7 8; 1 2 6 5; 2 3 7 6; 3 4 8 7; 4 1 5 8];
     shade = [1.05 0.92 0.84 0.90 0.98];
     for f=1:5
@@ -639,15 +713,47 @@ for i=1:n-1
         patch(ax,'Vertices',V,'Faces',faces(f,:),'FaceColor',fc,'EdgeColor',edgeC, ...
             'EdgeAlpha',0.4,'LineWidth',0.5,'FaceLighting','none');
     end
-    % 标线
-    plot3(ax, [cc(1)-dir(1)*Lh cc(1)+dir(1)*Lh], ...
-        [cc(2)-dir(2)*Lh cc(2)+dir(2)*Lh], ...
-        [deckZ+2.05 deckZ+2.05], 'Color',[0.95 0.85 0.30],'LineWidth',1.0);
-    % 栏杆
+    % 标线 + 栏杆
+    plot3(ax, [c1(1) c2(1)], [c1(2) c2(2)], [(za+zb)/2+2.05 (za+zb)/2+2.05], ...
+        'Color',[0.95 0.85 0.30],'LineWidth',1.0);
     for sgn=[-1 1]
         e1 = cc + dir*Lh + perp*(sgn*w); e2 = cc - dir*Lh + perp*(sgn*w);
-        plot3(ax, [e1(1) e2(1)], [e1(2) e2(2)], [z1 z1], 'Color',edgeC,'LineWidth',0.8);
+        plot3(ax, [e1(1) e2(1)], [e1(2) e2(2)], [(za+zb)/2+2 (za+zb)/2+2], 'Color',edgeC,'LineWidth',0.8);
     end
+else
+    % 多段桥：沿弧长重采样为连续带
+    segLen = sqrt(sum(diff(cl,1,1).^2, 2));
+    cumLen = [0; cumsum(segLen)];
+    totalLen = cumLen(end);
+    nSamp = max(40, ceil(totalLen/3));        % 每 ~3m 一点，保证丝滑
+    ts = linspace(0, totalLen, nSamp);
+    % 重采样 XY（按弧长线性插值原始折线）
+    xs = interp1(cumLen, cl(:,1), ts, 'linear', 'extrap');  xs = xs(:);
+    ys = interp1(cumLen, cl(:,2), ts, 'linear', 'extrap');  ys = ys(:);
+    % 重采样 deckZ：原始节点 deckZ 沿桥长（按节点参数 0..1）线性插值
+    if isscalar(dZ)
+        zs = repmat(dZ, 1, nSamp);
+    else
+        zNodes = linspace(0, 1, numel(dZ)).';
+        zs = interp1(zNodes, dZ(:).', ts/totalLen, 'linear', 'extrap');  zs = zs(:);
+    end
+    % 局部切线 -> 法向（统一为列向量，避免行/列拼接维度不一致）
+    tx = [diff(xs); xs(end)-xs(end-1)];  tx = tx(:);
+    ty = [diff(ys); ys(end)-ys(end-1)];  ty = ty(:);
+    tl = sqrt(tx.^2 + ty.^2); tx = tx./max(tl,1e-9); ty = ty./max(tl,1e-9);
+    px = -ty; py = tx;                          % 法向
+    % 左右缘点（带桥面厚度 2）
+    Lx = xs + px*w; Ly = ys + py*w; Lz = zs;
+    Rx = xs - px*w; Ry = ys - py*w; Rz = zs;
+    % 连续桥面带（surf）：2 x nSamp 网格（左缘行 + 右缘行）
+    Xb = [Lx, Rx].'; Yb = [Ly, Ry].'; Zb = [Lz, Rz+2].';
+    surf(ax, Xb, Yb, Zb, 'FaceColor',[0.78 0.74 0.68], 'EdgeColor','none', ...
+        'FaceAlpha',1, 'LineWidth',0.2, 'FaceLighting','none');
+    % 标线（重采样中心线，沿桥脊）
+    plot3(ax, xs, ys, zs+2.05, 'Color',[0.95 0.85 0.30], 'LineWidth',1.0);
+    % 栏杆（左右缘连续线）
+    plot3(ax, Lx, Ly, Lz+2, 'Color',edgeC, 'LineWidth',0.8);
+    plot3(ax, Rx, Ry, Rz+2, 'Color',edgeC, 'LineWidth',0.8);
 end
 end
 

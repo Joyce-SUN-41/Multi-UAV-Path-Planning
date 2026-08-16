@@ -27,16 +27,23 @@ function scene = mu_config(mode, varargin)
 %   smooth       样条采样点数（轨迹离散化密度）
 %   seed         随机种子
 
-% ---- 环境整体缩放因子 ENV_SCALE（须与 mu_city_layout 一致，2026-08-10）----
-% 城市几何整体放大 2.5 倍（X/Y 半范围 = 200*2.5 = 500，用户要求 -500..500 等比），
+% ---- 环境整体缩放因子 ENV_SCALE（须与 mu_city_layout 一致）----
+% 城市几何整体放大 2.5 倍（X/Y 半范围 = 200*2.5 = 500），使三个地图 X/Y 均为 [-500, +500]。
 % 无人机本体尺寸（vehMargin / 车辆半径 / 轨迹线宽）不变，
-% 缝宽相对无人机变宽，优化（CAv9x）难度下降，无人机不易卡缝。
+% 缝宽相对无人机变宽，优化（CAv9x）难度下降，无人机不易卡缝；
+% 同时避免过度放大导致楼宇过高、飞行高度上限与空域尺度失配。
+% 注意：本值仅控制"城市几何内部比例"，搜索外框 bounds 已独立锁死（见下）。
 ENV_SCALE = 2.5;
 
-% ---- 默认搜索空间（立体老城尺度，640 x 640 x 288）----
-% 旧版 Z 上限 150，后因"塔矮于地形"问题提到 180；本轮乘 ENV_SCALE 放大 xy 与 Z。
-% Z 上限 = 180 * ENV_SCALE，给"地形抬升 + 高层塔架"留足余量。
-bounds = [-200*ENV_SCALE 200*ENV_SCALE -200*ENV_SCALE 200*ENV_SCALE 0 180*ENV_SCALE];
+% ---- 默认搜索空间（长方体外框，严格锁死，不随 ENV_SCALE 漂移）----
+% 用户要求：X/Y 轴均为 [-500, +500]（跨度 1000），Z 轴 [-50, +300]。
+% 这三个地图的外框必须恒定为此值——故直接硬编码，不再由 ENV_SCALE 派生，
+% 任何分支都不能覆盖 scene.bounds 的 X/Y/z 范围（专项回归 verify_round5/6 例外，
+% 它们故意传入非默认 bounds 以测试 covR 跟随逻辑，不影响默认路径）。
+% 城市几何 XY 半范围 = 200*ENV_SCALE = 500，恰好填满此外框；Z 轴按实际地形/楼高生成，
+% 楼顶上限由 mu_city_layout.Z_CEIL(=280) 裁剪以保证 <= 300。
+BOUNDS_LOCKED = [-500 500 -500 500 -50 300];
+bounds = BOUNDS_LOCKED;
 
 % ---- 默认代价权重 ----
 w = struct();
@@ -48,6 +55,7 @@ w.separation = 25.0; % (tour) 机间最小间隔惩罚
 w.ordering = 0.0;    % (tour) 顺序合理性
 w.comms = 0.0;       % 阶段E：通信链路约束（UAV 须落在 comms 节点覆盖内；默认关，避免破坏现有规划正则）
 w.vehicle = 60.0;    % 阶段D：时变车辆碰撞惩罚系数（与 w.obstacle 同量级，避免规划器"擦蹭车辆"）
+w.height  = 1e5;     % 飞行高度硬上限：超过 flightCeiling(默认100m) 即施加超大惩罚(炸机)，远超其他项量级
 
 scene = struct();
 scene.mode      = mode;
@@ -59,16 +67,29 @@ scene.bounds    = bounds;
 scene.smooth    = 140;
 scene.seed      = 0;
 scene.w         = w;
+
+% 并行评估开关：代价函数逐 UAV 循环可用 parfor 加速（需已开并行池）。
+% 默认开；若未开并行池或显式置 false，代价函数自动退化为普通 for，零风险。
+scene.useParallel = true;
 scene.T_horizon = 60;   % 单架机飞行时间预算(秒)，用于把轨迹弧长配准到时间轴以接入时变碰撞(D1)
 scene.safeMargin   = 6*ENV_SCALE; % 障碍安全壳外扩(m)，随环境放大（p2p/tour 共用）
 scene.terrainMargin= 8*ENV_SCALE; % 最低飞行高度裕度(m)，随环境放大（p2p/tour 共用）
 scene.vehMargin    = 3; % 车辆安全壳外扩(m)，D1 时变碰撞共用（无人机本体尺寸，不乘 S）
+% 飞行高度硬上限（米，绝对 z）。无人机飞行高度超过此值的轨迹段受 w.height(=1e5)
+% 超大惩罚，等效"炸机"硬约束（禁飞）。用户规定：飞行高度超过 100m 即算炸机，
+% 故此处固定为 100（绝对值，不随 ENV_SCALE 漂移）。必须 <= bounds(6)=300。
+% 用户可用 'flightCeiling' 覆盖（绝对值，单位米），但任何覆盖都不得突破 300。
+scene.flightCeiling = 100;   % = 100m 绝对封顶，超过即炸机（禁飞），同时缩小 CA 搜索空间
 % 阶段E：通信链路竖直容差(m)，R9 修复——不再硬编码 30，改为随空域尺度缩放
 % （旧版 mu_comms_penalty 内 VZ=30 固定，大场景下竖直方向限死、小场景又过宽）。
 % 取空域 z 跨度的 ~12%，落在合理巡航层厚度量级；可被用户 'commsVZ' 覆盖。
 scene.commsVZ = 0.12 * (bounds(6) - bounds(5));
 
 scene.needPoints = true;
+
+% 并行评估开关：代价函数逐 UAV 循环可用 parfor 加速（需已开并行池）。
+% 默认开；若未开并行池或显式置 false，代价函数自动退化为普通 for，零风险。
+scene.useParallel = true;
 
 if strcmpi(mode, 'p2p')
     scene.nUAV  = 3;
@@ -91,13 +112,17 @@ if nargin > 1
     for i=1:2:numel(varargin)
         name = varargin{i}; val = varargin{i+1};
         if strcmpi(mode,'tour') && strcmpi(name,'nCtrl')
-            warning('mu_config: tour 模式的控制点数由客户点数自动决定，忽略 nCtrl 参数。');
+            warning('mu_config: tour mode nCtrl is auto-decided by task count; nCtrl ignored.');
             continue;
         end
         if strcmpi(name,'nUAV')
             val = max(3, min(30, val));
             scene.nUAV = val;
             scene.needPoints = true;
+
+% 并行评估开关：代价函数逐 UAV 循环可用 parfor 加速（需已开并行池）。
+% 默认开；若未开并行池或显式置 false，代价函数自动退化为普通 for，零风险。
+scene.useParallel = true;
             if strcmpi(mode,'tour') && ~isempty(scene.tasks)
                 nT = size(scene.tasks,1);
                 scene.taskAssign = cell(val,1);
@@ -115,7 +140,7 @@ if nargin > 1
         elseif isfield(scene.w, name)
             scene.w.(name) = val;
         else
-            warning('mu_config: 忽略未知参数 "%s"', name);
+            warning('mu_config: ignoring unknown parameter "%s"', name);
         end
     end
 end
@@ -146,9 +171,11 @@ scene.sensors   = city.sensors;       % 阶段E：传感器挂载点（cam/met/n
 % （320/240/180 ...），不随场景 bounds 缩放；而竖直容差 VZ 已用
 % bounds(6)-bounds(5) 缩放（R9），两者不对称。若场景 bounds 放大（如 800x800），
 % covR 不缩放会让链路约束语义失真（覆盖相对变小、约束过严）。此处集中做尺度归一：
-% 以默认 400*ENV_SCALE（即当前默认场景 x 跨度）为基准，covR 乘场景 x 跨度比例，
+% 以锁死默认场景 x 跨度 (bounds(2)-bounds(1))=1000 为基准，covR 乘场景 x 跨度比例，
 % 与 VZ 缩放策略对称。默认场景比例=1.0（无漂移，covR 与 city 原始基准一致）。
-commsScaleXY = (scene.bounds(2) - scene.bounds(1)) / (400 * ENV_SCALE);
+% 注：专项回归 verify_round5/6 故意传入非默认 bounds 以测试此跟随逻辑，此处一律按
+% 传入的 scene.bounds 计算比例，与默认值一致。
+commsScaleXY = (scene.bounds(2) - scene.bounds(1)) / (BOUNDS_LOCKED(2) - BOUNDS_LOCKED(1));
 if commsScaleXY ~= 1 && ~isempty(scene.comms)
     for k = 1:numel(scene.comms)
         scene.comms(k).covR = scene.comms(k).covR * commsScaleXY;
@@ -157,10 +184,23 @@ end
 
 % ---- 仓库（depot）：地面固定配送站 ----
 scene.depots = mu_depots(scene.difficulty, scene.seed, ENV_SCALE);
+% R35 修复：仓库 z 原固定 22m，但地形在边缘可达 100m+，导致 depot/起点/终点
+%   落入地下。先按地形标高抬升每个 depot 的 z（保证起点/终点均在地面以上），
+%   再交给 mu_clear_depots 做 3D 避障推开，避障计算基于真实高度。
+depotMinZ = 22;
+for dk = 1:size(scene.depots,1)
+    tz = scene.terrainF(scene.depots(dk,1), scene.depots(dk,2));
+    scene.depots(dk,3) = max(depotMinZ, tz + 12*ENV_SCALE);
+end
 % 第十轮(R28)修复：程序化 depot 与随机城市障碍独立采样、无避障校验，
 % 部分 depot 会落在建筑/禁飞区安全壳内(实测 easy/hard 必现)，导致规划器
 % 从穿透态出发、idle 机被障碍代价持续不公平惩罚。此处把 depot 统一推出壳外。
 scene.depots = mu_clear_depots(scene.depots, scene.obstacles, scene.safeMargin + 5);
+% 推开后地形可能微变（XY 漂移），再次抬升 z 保证仍在地面以上。
+for dk = 1:size(scene.depots,1)
+    tz = scene.terrainF(scene.depots(dk,1), scene.depots(dk,2));
+    scene.depots(dk,3) = max(scene.depots(dk,3), tz + 12*ENV_SCALE);
+end
 
 % ---- 随机生成起终点（仓库中选择 + 客户点选择，互不重叠、避开障碍）----
 if scene.needPoints
@@ -205,9 +245,12 @@ if strcmpi(mode,'tour')
     scene.ctrlPer = zeros(scene.nUAV,1);
     for k=1:scene.nUAV
         if isempty(scene.taskAssign{k})
-            scene.ctrlPer(k) = 2;
+            scene.ctrlPer(k) = 2;                       % 空闲机：start->goal 直线，最小维度
         else
-            scene.ctrlPer(k) = scene.nCtrl;
+            % R42：按该机实际任务数分配控制点，而非统一取 nCtrl=2*(maxT+1)。
+            % 任务少的机若取统一 nCtrl，多余控制点会被 mu_build_tour_traj 静默丢弃，
+            % 形成跨机"死维度"（R20 仅消除了空闲机死维度，此遗留补全）。
+            scene.ctrlPer(k) = 2 * (numel(scene.taskAssign{k}) + 1);
         end
     end
     scene.dimCtrl = sum(scene.ctrlPer * 3);
@@ -256,9 +299,12 @@ end
 % ============ 客户点（tour） ============
 function tasks = mu_customer_points(nT, obst, depots, seed, ENV_SCALE)
 % 客户点挂在楼宇上：楼顶停机坪 或 楼外低空停靠点
+% 约束：所有客户点必须落在锁死外框内（XY ∈ [-500,500]，Z ∈ [-50,300]），
+% 故 z 上限钳到 295（留余量），XY 偏移后若越 ±500 则跳过该候选重选。
 s = RandStream('mt19937ar','Seed', 200*seed + 11);
+XY_LIM = 500; Z_MAX = 295; Z_MIN = -50;
 tasks = zeros(nT,3);
-placed = 0; attempts = 0; placedXY = zeros(0,2); placedHW = zeros(0,2);
+placed = 0; attempts = 0;
 bldgs = obst(strcmp({obst.type},'bldg'));
 while placed < nT && attempts < 5000
     attempts = attempts + 1;
@@ -269,7 +315,7 @@ while placed < nT && attempts < 5000
     zlev = rand(s,1);
     if zlev < 0.5
         % 楼顶停机坪（楼正上方，安全壳外，留足 >margin 余量）
-        z = topH + 12*ENV_SCALE;
+        z = min(topH + 12*ENV_SCALE, Z_MAX);
     else
         % 楼外低空停靠点（xy 偏移出裙楼半宽+裕度）
         off = 8*ENV_SCALE;
@@ -277,7 +323,10 @@ while placed < nT && attempts < 5000
         cx = cx + (o.hw(1)+o.pod(1)+off)*cos(ang);
         cy = cy + (o.hw(2)+o.pod(2)+off)*sin(ang);
         z = max(14*ENV_SCALE, topH*0.3);
+        z = min(z, Z_MAX);
     end
+    % 楼外停靠点偏移可能越过 ±500 外框，越界则放弃该候选重选
+    if abs(cx) > XY_LIM || abs(cy) > XY_LIM, continue; end
     cand = [cx cy z];
     [dter,~] = mu_obstacle_dist(cand, obst(structcmp({obst.type},'terrain')), 8*ENV_SCALE);
     [dnf,~]  = mu_obstacle_dist(cand, obst(structcmp({obst.type},'nofly')), 0);
@@ -289,7 +338,12 @@ while placed < nT && attempts < 5000
 end
 if placed < nT
     while placed < nT
-        cand = [-200*ENV_SCALE+400*ENV_SCALE*rand(s,1), -200*ENV_SCALE+400*ENV_SCALE*rand(s,1), 20*ENV_SCALE+60*ENV_SCALE*rand(s,1)];
+        % 兜底随机点：范围收紧到外框内（留出安全壳余量），并钳制到锁死框
+        cand = [(-XY_LIM+6*ENV_SCALE)+2*(XY_LIM-6*ENV_SCALE)*rand(s,1), ...
+                (-XY_LIM+6*ENV_SCALE)+2*(XY_LIM-6*ENV_SCALE)*rand(s,1), ...
+                max(Z_MIN+1, 20*ENV_SCALE+60*ENV_SCALE*rand(s,1))];
+        cand(1:2) = max(-XY_LIM, min(XY_LIM, cand(1:2)));
+        cand(3)   = min(Z_MAX, cand(3));
         [d,~] = mu_obstacle_dist(cand, obst, 6*ENV_SCALE);
         if d>0
             placed = placed+1; tasks(placed,:)=cand;

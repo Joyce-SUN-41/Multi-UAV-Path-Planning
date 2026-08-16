@@ -25,7 +25,7 @@ UAV_COLORS = [0.30 0.75 0.90; 0.95 0.60 0.35; 0.70 0.85 0.40; ...
 % ---------- ?????? ----------
 fig = uifigure('Name','????????????? ?? Chronos/CA ????', ...
                'Color',C_BG, 'Position',[60 60 1280 760], ...
-               'Resize','on', 'AutoResizeChildren','off');
+               'Resize','on', 'AutoResizeChildren','off', 'WindowState','maximized');
 
 % ??????
 uititle = uilabel(fig, 'Text','?????????????  ??  CA (Chronos) ???????', ...
@@ -136,7 +136,7 @@ statusL = uilabel(pL,'Text','?????????????????????????', ...
     'WordWrap','on','FontSize',10);
 
 % ---------- ??? 3D ??????????? ----------
-ax3 = uiaxes(fig, 'Position',[350 300 600 440], ...
+ax3 = uiaxes(fig, 'Units','normalized', 'Position',[0.27 0.07 0.50 0.87], ...
     'Color',[1 1 1], 'GridColor',[0.80 0.84 0.90], ...
     'XColor',[0.35 0.40 0.48],'YColor',[0.35 0.40 0.48],'ZColor',[0.35 0.40 0.48]);
 title(ax3,'?????? ?? ???????','Color',[0.15 0.20 0.30],'FontSize',12,'FontWeight','bold');
@@ -145,7 +145,7 @@ grid(ax3,'on'); axis(ax3,'equal'); hold(ax3,'on');
 view(ax3, [38 26]);
 
 % ---------- ?????????? ----------
-axC = uiaxes(fig,'Position',[970 300 290 440], ...
+axC = uiaxes(fig,'Units','normalized','Position',[0.79 0.07 0.19 0.87], ...
     'Color',[0.05 0.07 0.10],'GridColor',[0.25 0.30 0.38], ...
     'XColor',C_TEXT2,'YColor',C_TEXT2,'ZColor',C_TEXT2);
 title(axC,'CA ????????','Color',C_ACCENT,'FontSize',12);
@@ -153,7 +153,7 @@ xlabel(axC,'????'); ylabel(axC,'????'); grid(axC,'on'); hold(axC,'on');
 
 % ??????
 infoL = uilabel(fig,'Text','????????   ??????????   ????????', ...
-    'Position',[350 270 910 22],'FontColor',C_TEXT,'BackgroundColor',C_BG, ...
+    'Units','normalized','Position',[0.27 0.035 0.71 0.035],'FontColor',C_TEXT,'BackgroundColor',C_BG, ...
     'FontSize',10,'WordWrap','off');
 
 % ---------- ????? ----------
@@ -251,7 +251,7 @@ function exportImg(~,~)
     appDir = fileparts(mfilename('fullpath'));
     outDir = fullfile(appDir, 'results');
     if ~exist(outDir,'dir'), mkdir(outDir); end
-    runTS = datestr(now, 'yyyy-mm-dd_HHMMSS');
+    runTS = char(datetime('now','Format','yyyy-MM-dd_HHmmSS'));
     % ??????????? + ???
     sc = APP.scene;
     tag = sprintf('%s_%s', APP.mode, sc.difficulty);
@@ -264,7 +264,24 @@ function exportImg(~,~)
         fC = fullfile(outDir, sprintf('muav_%s_convergence_%s', tag, runTS));
         mu_save_ui(APP.axC, [fC '.png'], 'png');
         mu_save_ui(APP.axC, [fC '.eps'], 'eps');
-        set(statusL,'Text',sprintf('??????? results/??%s??3D + ??????????? PNG/EPS??', [f3 '.png']));
+        % 同时保存完整结果为 .mat（可复现：scene + trajs + bestX + curve + APP 参数）
+        res = struct();
+        res.tag        = tag;
+        res.mode       = APP.mode;
+        res.difficulty = sc.difficulty;
+        res.scene      = sc;
+        res.trajs      = APP.trajs;
+        res.bestX      = APP.bestX;
+        res.bestCost   = APP.bestCost;
+        res.curve      = APP.curve;
+        res.opt        = struct('mode',APP.mode,'difficulty',sc.difficulty, ...
+                                'nUAV',sc.nUAV,'nCtrl',sc.nCtrl,'seed',2);
+        matF = fullfile(outDir, sprintf('muav_%s_%s.mat', tag, runTS));
+        mu_save_result(res, outDir, 'tag', tag);
+        % 补充视角图（俯视/侧视/近景），与已导出的 3D 透视互补，看清路径
+        mu_export_views(sc, APP.trajs, APP.mode, outDir, tag, runTS, ...
+            sprintf('%.2f', APP.bestCost), 'views', {'top','sideX','sideY','closeup'});
+        set(statusL,'Text',sprintf('??????? results/??%s??3D + ?????? + ??PNG/EPS ??MAT??', matF));
     catch ME
         set(statusL,'Text',['????????' ME.message]);
     end

@@ -1,5 +1,8 @@
 function [bestX, bestCost, curve, trajs, scene] = mu_run_planner(mode, varargin)
 % mu_run_planner ????CA ??%   [bestX, bestCost, curve, trajs, scene] = mu_run_planner(mode, ...)
+% ---- ???? CAv9x ????（父目录）----
+appDir = fileparts(mfilename('fullpath'));
+addpath(appDir); addpath(fileparts(appDir));   % CAV9x.m 在上一级目录
 %     mode     : 'p2p' | 'tour'
 %   ??Name/Value:
 %     pop, iter, maxFE, nCtrl, nUAV, difficulty, seed, caFun ( @CAv9x)
@@ -13,13 +16,13 @@ function [bestX, bestCost, curve, trajs, scene] = mu_run_planner(mode, varargin)
 % CA ??feval(fhd, x, scene) ??= fhd(x, scene)??
 % ---- ??----
 p = inputParser;
-addParameter(p,'pop',40);
-addParameter(p,'iter',120);
-addParameter(p,'maxFE',60000);
-addParameter(p,'nCtrl',5);
+addParameter(p,'pop',150);
+addParameter(p,'iter',400);
+addParameter(p,'maxFE',260000);
+addParameter(p,'nCtrl',12);
 addParameter(p,'nUAV',3);
 addParameter(p,'difficulty','medium');
-addParameter(p,'seed',0);
+addParameter(p,'seed',2);
 addParameter(p,'caFun',@CAv9x);
 parse(p, varargin{:});
 opt = p.Results;
@@ -69,6 +72,27 @@ end
 % ---- CA  ----
 caOpts = struct('maxFE', opt.maxFE, 'seed', opt.seed);
 
+% ---- 并行池：代价函数逐 UAV 用 parfor 加速（scene.useParallel 默认开）----
+% 仅当开关开、装了并行工具箱、且当前未开池时启动默认规模池；否则自动退化为串行。
+% parpool 启动用 try-catch 包裹：若 license/配置异常导致开池失败，降级串行而非崩溃。
+if scene.useParallel && ~isempty(ver('parallel'))
+    if isempty(gcp('nocreate'))
+        try
+            parpool;   % 使用默认 worker 数（通常 = 本地核心数）
+        catch MEpool
+            fprintf('[parallel] 并行池启动失败，降级串行 for：%s\n', MEpool.message);
+        end
+    end
+    p = gcp('nocreate');
+    if ~isempty(p)
+        fprintf('[parallel] 已启用 parfor 逐UAV并行，worker 数 = %d\n', p.NumWorkers);
+    else
+        fprintf('[parallel] 未获得并行池，退化为串行 for\n');
+    end
+else
+    fprintf('[parallel] 未启用（useParallel=false 或未装 Parallel Computing Toolbox），退化为串行 for\n');
+end
+
 % ----  CA scene ??varargin ??---
 if nargout >= 3
     [bestCost, bestX, curve] = opt.caFun(fhd, dim, opt.pop, opt.iter, lb, ub, caOpts, scene);
@@ -105,7 +129,7 @@ if strcmpi(mode,'tour')
             [~, ord] = sort(keys);
             waypts = scene.tasks(tIdx(ord), :);
             trajs{k} = mu_build_tour_traj(ctrl, scene.starts(k,:), scene.goals(k,:), ...
-                                          waypts, scene.smooth, ck);
+                                          waypts, scene.smooth);
         end
     end
 else

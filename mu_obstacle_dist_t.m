@@ -28,9 +28,9 @@ nv = numel(V);
 for vi=1:nv
     v = V(vi);
     [xy, zc] = mu_road_xy(dyn, vi, t);
-    cz = zc;
-    dx = point(:,1) - xy(1);
-    dy = point(:,2) - xy(2);
+    cz = zc;                                  % Nx1 各时刻车辆 z 中心（dir==0 时也为 Nx1）
+    dx = point(:,1) - xy(:,1);                % D1 修复：逐时刻配准，原 xy(1)/xy(2) 只取 t0 车辆位置，导致全轨迹点 vs 单时刻车辆，时变避障失效
+    dy = point(:,2) - xy(:,2);
     c = cos(-v.phi); s = sin(-v.phi);
     lx =  dx*c - dy*s;
     ly =  dx*s + dy*c;
